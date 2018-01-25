@@ -1,0 +1,6 @@
+.data
+*~
+.vector_cache
+*.log
+*.out
+*.txt
