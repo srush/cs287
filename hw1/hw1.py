@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("-wd", type=float, default=1e-4)
     parser.add_argument("-nonag", action="store_false")
     parser.add_argument("-clip", type=float, default=0.1)
+    parser.add_argument("-output_file", type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -95,7 +96,7 @@ def output_test_nb(model):
         _, argmax = probs.max(1)
         upload += list(argmax.data)
 
-    with open("predictions.txt", "w") as f:
+    with open(args.output_file, "w") as f:
         f.write("Id,Cat\n")
         for i,u in enumerate(upload):
             f.write(str(i) + "," + str(u+1) + "\n")
@@ -108,7 +109,7 @@ def output_test(model):
         yhat = F.sigmoid(model(batch.text)) > 0.5
         upload += yhat.tolist()
 
-    with open("predictions.txt", "w") as f:
+    with open(args.output_file, "w") as f:
         f.write("Id,Cat\n")
         for i,u in enumerate(upload):
             f.write(str(i) + "," + str(u+1) + "\n")
@@ -147,6 +148,7 @@ class NB(nn.Module):
         super(NB, self).__init__()
         self.vsize = len(vocab.itos)
         self.nclass = 2
+        self.alpha = alpha
         self.ys = list(range(self.nclass))
         self.xycounts = Parameter(torch.FloatTensor(len(vocab.itos), self.nclass).fill_(alpha))
         self.ycounts = Parameter(torch.FloatTensor(self.nclass).fill_(alpha))
@@ -347,12 +349,14 @@ models = [NB, LR, CBoW, CNN, CNNLSTM, LSTM]
 model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, args.dropout)
 if args.model == "NB":
     nb = train_nb()
-    print(validate_nb(nb, test_iter))
-    output_test_nb(nb)
+    print(validate_nb(nb, valid_iter))
+    if args.output_file:
+        output_test_nb(nb)
 else:
     if args.gpu > 0:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    print(validate(model, test_iter))
-    output_test(model)
+    #print(validate(model, valid_iter))
+    if args.output_file:
+        output_test(model)
