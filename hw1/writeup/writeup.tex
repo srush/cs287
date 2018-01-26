@@ -1,0 +1,61 @@
+\documentclass[9pt,letter]{article}
+
+\usepackage[margin=1in]{geometry}
+
+% Imports
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{fancyhdr}
+\usepackage{sectsty}
+\usepackage{dsfont}
+\usepackage{mathtools}
+
+% Symbols
+\newcommand\ind{\protect\mathpalette{\protect\independenT}{\perp}}
+\def\independenT#1#2{\mathrel{\rlap{$#1#2$}\mkern2mu{#1#2}}}
+\newcommand\norm[1]{\left\lVert#1\right\rVert}
+\newcommand\set[1]{\left\{#1\right\}}
+
+\newcommand\logit{\mathrm{logit}}
+
+\newcommand\Expo{\mathrm{Expo}}
+\newcommand\Bern{\mathrm{Bern}}
+\newcommand\Pois{\mathrm{Pois}}
+\newcommand\Bin{\mathrm{Bin}}
+\newcommand\Unif{\mathrm{Unif}}
+\newcommand\Betad{\mathrm{Beta}}
+\newcommand\Gammad{\mathrm{Gamma}}
+\newcommand\Geom{\mathrm{Geom}}
+\newcommand\Logd{\mathrm{Logistic}}
+
+\newcommand\E[1]{\mathbb{E}\left[#1\right]}
+\newcommand\Es[2]{\mathbb{E}_{#1}\left[#2\right]}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\Cor}{\mathrm{Cor}}
+
+% Section Style
+\sectionfont{\normalsize}
+\subsectionfont{\normalfont\normalsize}
+
+\begin{document}
+
+% Header
+\chead{Homework 1}
+\rhead{CS 287}
+\pagestyle{fancy}
+
+\centering
+\begin{tabular}{|c|c|c|}
+\hline
+a & Chebyshev & Chernoff\\
+\hline
+20 & 0.25 & 0.27067\\
+30 & 0.11111 & 0.02218\\
+40 & 0.0625 & 0.00067093\\
+50 & 0.04 & 7.45331e-6\\
+\hline
+\end{tabular}
+
+\end{document}
