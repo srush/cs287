@@ -204,37 +204,20 @@ class NB2(nn.Module):
 
     
     def _score(self, x, y):
-        #return ((self.xycounts[x, y]+1.) / (self.ycounts[y]+self.vsize)).prod(0)
-        # ~50% acc, i'm guessing becuase of p(y)
-        #return ((self.xycounts[x, y]+1).log_() - (self.ycounts[y]+self.vsize).log_() + self.ycounts[y].log_()).sum(0)
-        # ~80% acc
-        # x: (length, batch_size). y: 
-        #embed()
-
         length, batch_size = x.size()
         log_prob = torch.zeros((batch_size))
         for i in range(length):
             log_prob += self.xyprob[x[i]][:,y]
         log_prob += self.yprob[y]
         return log_prob
-        #log_prob = self.yprob[y] + torch.sum(self.xyprob[, ])
-        #log_prob = np.log(self.ycounts[y]) - np.log(torch.sum(self.ycounts[y]))
-        # N_{j,c} / N_c
-        # log py = log (self.ycounts[y]) - log (torch.sum(self.ycounts))
-        # log p(x|y) = sum_{j \in x} log(self.xycounts[x,
-        #return ((self.xycounts[x, y]+self.alpha).log_() - (self.ycounts[y]+self.vsize*self.alpha).log_()).sum(0)
 
     def forward(self, input):
-        # p(y|x) = p(y) \prod_i p(x|y) / p(x)
         x = input.data
         scores = torch.cat([self._score(x, y).view(-1, 1) for y in self.ys], 1)
         return scores
-        #Z = sum(scores)
-        #return scores / Z
 
 
     def update_counts(self, x, y):
-        # Let's do a sparse to dense update? What's the point, just loop
         xd = x.data  # (length, batch_size)
         yd = y.data.ne(0) # (batch_size)
         
@@ -245,8 +228,6 @@ class NB2(nn.Module):
         for i in range(batch_size):
             self.ycounts[yd[i]] += 1
 
-        # self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True) # change this
-        # self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True) # change this
 
 class LR(nn.Module):
     def __init__(self, vocab, dropout):
