@@ -18,11 +18,11 @@ from IPython import embed
 import numpy as np
 
 torch.manual_seed(1111)
-#torch.cuda.manual_seed_all(1111)
+torch.cuda.manual_seed_all(1111)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", choices=['NB', 'NB2', "LR", "CBoW", "CNN", "CNNLSTM", "LSTM"])
+    parser.add_argument("-model", choices=['NB', 'NB2', "LR", "CBoW", "CNN", "CNNLOL", "CNNLSTM", "LSTM"])
     parser.add_argument("-gpu", type=int, default=-1)
     parser.add_argument("-lr", type=float, default=1)
     parser.add_argument("-lrd", type=float, default=0.9)
@@ -290,6 +290,31 @@ class CNN(nn.Module):
         self.vsize = len(vocab.itos)
         self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
         self.static_lut.weight.data.copy_(vocab.vectors)
+        #self.static_lut.requires_grad = False
+        self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.lut.weight.data.copy_(simple_vec)
+        #self.lut.requires_grad = False
+        self.convs = nn.ModuleList([
+            nn.Conv1d(600, 100, 3),
+            nn.Conv1d(600, 100, 4, padding=1),
+            nn.Conv1d(600, 100, 5, padding=1),
+        ])
+        self.proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(300, 1)
+        )
+
+    def forward(self, input):
+        word_rep = torch.cat([self.lut(input), self.static_lut(input)], -1).permute(1, 2, 0)
+        cnns = torch.cat([F.relu(conv(word_rep)).max(2)[0] for conv in self.convs], 1)
+        return self.proj(cnns).squeeze(-1)
+
+class CNNLOL(nn.Module):
+    def __init__(self, vocab, dropout=0):
+        super(CNN, self).__init__()
+        self.vsize = len(vocab.itos)
+        self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.static_lut.weight.data.copy_(vocab.vectors)
         self.static_lut.requires_grad = False
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
         self.lut.weight.data.copy_(simple_vec)
@@ -415,7 +440,7 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
 
 
 
-models = [NB, NB2, LR, CBoW, CNN, CNNLSTM, LSTM]
+models = [NB, NB2, LR, CBoW, CNN, CNNLOL, CNNLSTM, LSTM]
 
 if args.model == "NB" or args.model == "NB2":
     model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, len(LABEL.vocab.itos))
@@ -429,6 +454,6 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    #print(validate(model, valid_iter))
+    print(validate(model, valid_iter))
     if args.output_file:
         output_test(model)
