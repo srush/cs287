@@ -1,5 +1,5 @@
 import argparse
- 
+
 import torchtext
 from torchtext.vocab import Vectors, GloVe
 
@@ -14,12 +14,15 @@ from torch.nn.utils import clip_grad_norm
 
 from tqdm import tqdm
 
+from IPython import embed
+import numpy as np
+
 torch.manual_seed(1111)
-torch.cuda.manual_seed_all(1111)
+#torch.cuda.manual_seed_all(1111)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", choices=['NB', "LR", "CBoW", "CNN", "CNNLSTM", "LSTM"])
+    parser.add_argument("-model", choices=['NB', 'NB2', "LR", "CBoW", "CNN", "CNNLSTM", "LSTM"])
     parser.add_argument("-gpu", type=int, default=-1)
     parser.add_argument("-lr", type=float, default=1)
     parser.add_argument("-lrd", type=float, default=0.9)
@@ -122,8 +125,13 @@ def validate_nb(model, valid):
         y = batch.label
         yhat = model(x)
         _, argmax = yhat.max(1)
-        results = argmax == y
-        correct += float(results.sum())
+        if args.model == "NB2":
+            results = torch.autograd.Variable(argmax) == y
+            correct += float(results.sum().data[0])
+        else:
+            results = argmax == y
+            correct += float(results.sum())
+
         total += results.size(0)
     return correct , total, correct / total
 
@@ -174,9 +182,71 @@ class NB(nn.Module):
         xd = x.data
         yd = y.data
         idxs = xd * 2
-        idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1
+        idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1 
         self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True)
         self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True)
+
+class NB2(nn.Module):
+    # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
+    def __init__(self, vocab, dropout, alpha=1):
+        super(NB2, self).__init__()
+        self.vsize = len(vocab.itos)
+        self.nclass = 2
+        self.alpha = alpha
+        self.ys = list(range(self.nclass))
+        self.xycounts = torch.zeros(len(vocab.itos), self.nclass) #.fill_(alpha)
+        self.ycounts = torch.zeros(self.nclass) #.fill_(alpha)
+
+    def get_probs(self):
+        # NB: now, only added alpha for xyprob
+        self.yprob = torch.log(self.ycounts.clone()) - np.log(torch.sum(self.ycounts))
+        self.xyprob = torch.log((self.xycounts.clone() + self.alpha)) - torch.log(self.ycounts.view(1,-1).expand_as(self.xycounts) + self.vsize * self.alpha)
+
+    
+    def _score(self, x, y):
+        #return ((self.xycounts[x, y]+1.) / (self.ycounts[y]+self.vsize)).prod(0)
+        # ~50% acc, i'm guessing becuase of p(y)
+        #return ((self.xycounts[x, y]+1).log_() - (self.ycounts[y]+self.vsize).log_() + self.ycounts[y].log_()).sum(0)
+        # ~80% acc
+        # x: (length, batch_size). y: 
+        #embed()
+
+        length, batch_size = x.size()
+        log_prob = torch.zeros((batch_size))
+        for i in range(length):
+            log_prob += self.xyprob[x[i]][:,y]
+        log_prob += self.yprob[y]
+        return log_prob
+        #log_prob = self.yprob[y] + torch.sum(self.xyprob[, ])
+        #log_prob = np.log(self.ycounts[y]) - np.log(torch.sum(self.ycounts[y]))
+        # N_{j,c} / N_c
+        # log py = log (self.ycounts[y]) - log (torch.sum(self.ycounts))
+        # log p(x|y) = sum_{j \in x} log(self.xycounts[x,
+        #return ((self.xycounts[x, y]+self.alpha).log_() - (self.ycounts[y]+self.vsize*self.alpha).log_()).sum(0)
+
+    def forward(self, input):
+        # p(y|x) = p(y) \prod_i p(x|y) / p(x)
+        x = input.data
+        scores = torch.cat([self._score(x, y).view(-1, 1) for y in self.ys], 1)
+        return scores
+        #Z = sum(scores)
+        #return scores / Z
+
+
+    def update_counts(self, x, y):
+        # Let's do a sparse to dense update? What's the point, just loop
+        xd = x.data  # (length, batch_size)
+        yd = y.data.ne(0) # (batch_size)
+        
+        length, batch_size = xd.size()
+        for l in range(length):
+            for i in range(batch_size):
+                self.xycounts[xd[l][i], yd[i]] += 1
+        for i in range(batch_size):
+            self.ycounts[yd[i]] += 1
+
+        # self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True) # change this
+        # self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True) # change this
 
 class LR(nn.Module):
     def __init__(self, vocab, dropout):
@@ -298,14 +368,15 @@ class LSTM(nn.Module):
         z = torch.cat([h.permute(1,0,2), c.permute(1,0,2)], -1).view(input.size(1), -1)
         return self.proj(z).squeeze(-1)
 
-def train_nb():
-    nb = NB(TEXT.vocab, len(LABEL.vocab.itos))
+def train_nb(nb):
     ugh = iter(train_iter)
     for i in range(len(train_iter)):
         batch = next(ugh)
         x = batch.text
         y = batch.label
         nb.update_counts(x, y)
+    if args.model == "NB2":
+        nb.get_probs()
     return nb
 
 def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
@@ -344,15 +415,16 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
 
 
 
-models = [NB, LR, CBoW, CNN, CNNLSTM, LSTM]
+models = [NB, NB2, LR, CBoW, CNN, CNNLSTM, LSTM]
 
-model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, args.dropout)
-if args.model == "NB":
-    nb = train_nb()
+if args.model == "NB" or args.model == "NB2":
+    model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, len(LABEL.vocab.itos))
+    nb = train_nb(model)
     print(validate_nb(nb, valid_iter))
     if args.output_file:
         output_test_nb(nb)
 else:
+    model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, args.dropout)
     if args.gpu > 0:
         model.cuda(args.gpu)
     print(model)
