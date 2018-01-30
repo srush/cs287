@@ -1,5 +1,7 @@
 import argparse
 
+import math
+
 import torchtext
 from torchtext.vocab import Vectors, GloVe
 
@@ -33,6 +35,7 @@ def parse_args():
     parser.add_argument("-dm", type=float, default=0)
     parser.add_argument("-wd", type=float, default=1e-4)
     parser.add_argument("-nonag", action="store_false")
+    parser.add_argument("-binarize_nb", action="store_true")
     parser.add_argument("-clip", type=float, default=0.1)
     parser.add_argument("-output_file", type=str, default=None)
     args = parser.parse_args()
@@ -152,39 +155,47 @@ def validate(model, valid):
 # Models
 class NB(nn.Module):
     # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
-    def __init__(self, vocab, dropout, alpha=1):
+    def __init__(self, vocab, dropout, binarize=True, alpha=1):
         super(NB, self).__init__()
         self.vsize = len(vocab.itos)
         self.nclass = 2
-        self.alpha = alpha
+        self.binarize = binarize
         self.ys = list(range(self.nclass))
         self.xycounts = Parameter(torch.FloatTensor(len(vocab.itos), self.nclass).fill_(alpha))
-        self.ycounts = Parameter(torch.FloatTensor(self.nclass).fill_(alpha))
+        self.ycounts = Parameter(torch.FloatTensor(self.nclass).fill_(0))
 
     def _score(self, x, y):
-        #return ((self.xycounts[x, y]+1.) / (self.ycounts[y]+self.vsize)).prod(0)
-        # ~50% acc, i'm guessing becuase of p(y)
-        #return ((self.xycounts[x, y]+1).log_() - (self.ycounts[y]+self.vsize).log_() + self.ycounts[y].log_()).sum(0)
-        # ~80% acc
-        return ((self.xycounts[x, y]+self.alpha).log_() - (self.ycounts[y]+self.vsize*self.alpha).log_()).sum(0)
+        if self.binarize:
+            score = V(torch.FloatTensor(x.size(1)).fill_(0))
+            for j in range(x.size(1)):
+                tokens = torch.LongTensor(list(set(x[:,j].tolist())))
+                score[j] += (self.xycounts[tokens][:, y].log() - self.xycounts[:, y].sum().log()).sum()
+            return score + self.ycounts[y].log()
+        else:
+            return (self.xycounts[x, y].log() - self.xycounts[:, y].sum().log()).sum(0) \
+                + self.ycounts[y].log()# - self.ycounts.sum().log()
 
     def forward(self, input):
         # p(y|x) = p(y) \prod_i p(x|y) / p(x)
         x = input.data
         scores = torch.cat([self._score(x, y).view(-1, 1) for y in self.ys], 1)
         return scores
-        #Z = sum(scores)
-        #return scores / Z
-
 
     def update_counts(self, x, y):
-        # Let's do a sparse to dense update? What's the point, just loop
         xd = x.data
         yd = y.data
-        idxs = xd * 2
-        idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1 
-        self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True)
-        self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True)
+        if self.binarize:
+            for j in range(yd.size(0)):
+                tokens = set(xd[:,j].tolist())
+                label = yd[j]
+                for token in tokens:
+                    self.xycounts[token, label] += 1
+                self.ycounts[label] += 1
+        else:
+            idxs = xd * 2
+            idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1
+            self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True)
+            self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True)
 
 class NB2(nn.Module):
     # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
@@ -200,8 +211,8 @@ class NB2(nn.Module):
     def get_probs(self):
         # NB: now, only added alpha for xyprob
         self.yprob = torch.log(self.ycounts.clone()) - np.log(torch.sum(self.ycounts))
-        self.xyprob = torch.log((self.xycounts.clone() + self.alpha)) - torch.log(self.ycounts.view(1,-1).expand_as(self.xycounts) + self.vsize * self.alpha)
-
+        #self.xyprob = torch.log((self.xycounts.clone() + self.alpha)) - torch.log(self.ycounts.view(1,-1).expand_as(self.xycounts) + self.vsize * self.alpha)
+        self.xyprob = torch.log((self.xycounts.clone() + self.alpha)) 
     
     def _score(self, x, y):
         length, batch_size = x.size()
@@ -423,8 +434,9 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
 
 models = [NB, NB2, LR, CBoW, CNN, CNNLOL, CNNLSTM, LSTM]
 
-if args.model == "NB" or args.model == "NB2":
-    model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, len(LABEL.vocab.itos))
+if "NB" in args.model:
+    model = list(filter(lambda x: x.__name__ == args.model, models))[0](
+        TEXT.vocab, len(LABEL.vocab.itos), binarize=args.binarize_nb)
     nb = train_nb(model)
     print(validate_nb(nb, valid_iter))
     if args.output_file:
@@ -435,6 +447,6 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    print(validate(model, valid_iter))
+    print(validate(model, test_iter))
     if args.output_file:
         output_test(model)

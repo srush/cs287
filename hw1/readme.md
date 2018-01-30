@@ -9,3 +9,8 @@ Switched up CNN to be more faithful to yoon's 2014 model (~0.815 valid acc):
 python hw1.py -gpu 3 -lr 0.1 -lrd 0.8 -epochs 25 -dropout 0.5 -bsz 64 -model CNN -mom 0.90
 ```
 
+Got to 79 valid acc, 82 test acc with...binarization doesn't seem to help?
+Should be good to double check with NB2 :) thanks demi
+```
+python hw1.py -model NB
+```
