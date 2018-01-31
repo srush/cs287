@@ -34,7 +34,7 @@ def parse_args():
     parser.add_argument("-mom", type=float, default=0.9)
     parser.add_argument("-dm", type=float, default=0)
     parser.add_argument("-wd", type=float, default=1e-4)
-    parser.add_argument("-nonag", action="store_false")
+    parser.add_argument("-nonag", action="store_true", default=False)
     parser.add_argument("-binarize_nb", action="store_true")
     parser.add_argument("-clip", type=float, default=0.1)
     parser.add_argument("-output_file", type=str, default=None)
@@ -67,7 +67,7 @@ print('len(LABEL.vocab)', len(LABEL.vocab))
 labels = [ex.label for ex in train.examples]
 
 train_iter, _, _ = torchtext.data.BucketIterator.splits(
-    (train, valid, test), batch_size=args.bsz, device=args.gpu)
+    (train, valid, test), batch_size=args.bsz, device=args.gpu, repeat=False)
 
 _, valid_iter, test_iter = torchtext.data.BucketIterator.splits(
     (train, valid, test), batch_size=10, device=args.gpu)
@@ -241,20 +241,28 @@ class NB2(nn.Module):
 
 
 class LR(nn.Module):
-    def __init__(self, vocab, dropout):
+    def __init__(self, vocab, dropout, binarize=False):
         super(LR, self).__init__()
         self.vsize = len(vocab.itos)
         # Since this is binary LRRwe can just use BCEWithLogitsLoss
-        self.lut = nn.Embedding(self.vsize, 1)
+        self.lut = nn.Embedding(self.vsize, 1, padding_idx=1)
         self.bias = Parameter(torch.zeros(1))
+        self.binarize = binarize
 
     def forward(self, input):
         # input will be seqlen x bsz, so we want to use the weights from the lut
         # and sum them up to get the logits.
-        return self.lut(input).squeeze(-1).sum(0) + self.bias
+        if self.binarize:
+            output = V(torch.FloatTensor(input.size(1)))
+            for j in range(input.size(1)):
+                tokens = torch.LongTensor(list(set(input[:,j].tolist())))
+                output[j] = self.lut(V(tokens)).sum()
+            return output + self.bias
+        else:
+            return self.lut(input).squeeze(-1).sum(0) + self.bias
 
 class CBoW(nn.Module):
-    def __init__(self, vocab, dropout=0):
+    def __init__(self, vocab, dropout=0, binarize=True):
         super(CBoW, self).__init__()
         self.vsize = len(vocab.itos)
         self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
@@ -402,22 +410,35 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
     #optimizer = optim.Adagrad(params, lr = lr, weight_decay = args.wd)
     #optimizer = optim.Adadelta(params, lr = lr, weight_decay = args.wd)
     optimizer = optim.SGD(params, lr = lr, weight_decay = args.wd, momentum=args.mom, dampening=args.dm, nesterov=not args.nonag)
+    #optimizer = optim.LBFGS(params)
     #for p in optimizer.param_groups[0]['params']:
     #    optimizer.state[p]['sum'].fill_(1e-10)
     for epoch in range(epochs):
         model.train()
         train_loss = 0
         print("Epoch {} | lr {}".format(epoch, lr))
-        for i in tqdm(range(len(train_iter))):
-            batch = next(ugh)
+        for batch in tqdm(train_iter):
+        #for i in tqdm(range(len(train_iter))):
+            #batch = next(ugh)
             x = batch.text
             y = batch.label
+            """
             optimizer.zero_grad()
             bloss = loss(model(x), y.float())
             train_loss += bloss
             bloss.backward()
-            clip_grad_norm(params, args.clip)
+            if args.clip > 0:
+                clip_grad_norm(params, args.clip)
             optimizer.step()
+            """
+            def closure():
+                nonlocal train_loss
+                optimizer.zero_grad()
+                bloss = loss(model(x), y.float())
+                bloss.backward()
+                train_loss += bloss
+                return bloss
+            optimizer.step(closure)
             #clip_param_norm(params, 3)
         train_loss /= len(train_iter)
         print("Train loss: " + str(train_loss.data[0]))
@@ -431,13 +452,13 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
             #    optimizer.state[p]['acc_delta'].fill_(1e-10)
 
 
-
 models = [NB, NB2, LR, CBoW, CNN, CNNLOL, CNNLSTM, LSTM]
 
 if "NB" in args.model:
     model = list(filter(lambda x: x.__name__ == args.model, models))[0](
         TEXT.vocab, len(LABEL.vocab.itos), binarize=args.binarize_nb)
     nb = train_nb(model)
+    print(validate_nb(nb, train_iter))
     print(validate_nb(nb, valid_iter))
     if args.output_file:
         output_test_nb(nb)
@@ -447,6 +468,8 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
+    print(validate(model, train_iter))
+    print(validate(model, valid_iter))
     print(validate(model, test_iter))
     if args.output_file:
         output_test(model)
