@@ -160,8 +160,8 @@ class NB2(nn.Module):
         length, batch_size = x.size()
         f = torch.zeros((self.vsize, batch_size))
         for i in range(batch_size):  # TODO: make it more efficient
-            f[:,i][x[:,i]] += 1  
-        f = (f > 0).float()
+            f[:,i][x[:,i]] = 1  
+        #f = (f > 0).float()
         return f
 
     def get_probs(self):
@@ -207,5 +207,6 @@ model = NB2(TEXT.vocab, len(LABEL.vocab.itos))
 nb = train_nb(model)
 print(validate_nb(nb, train_iter))
 print(validate_nb(nb, valid_iter))
+print(validate_nb(nb, test_iter))
 if args.output_file:
     output_test_nb(nb)

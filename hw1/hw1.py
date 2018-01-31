@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("-nonag", action="store_true", default=False)
     parser.add_argument("-binarize_nb", action="store_true")
     parser.add_argument("-clip", type=float, default=0.1)
-    parser.add_argument("-output_file", type=str, default=None)
+    parser.add_argument("-dooutput", action="store_true")
     args = parser.parse_args()
     return args
 
@@ -102,7 +102,7 @@ def output_test_nb(model):
         _, argmax = probs.max(1)
         upload += list(argmax.data)
 
-    with open(args.output_file, "w") as f:
+    with open(args.model + ".txt", "w") as f:
         f.write("Id,Cat\n")
         for i,u in enumerate(upload):
             f.write(str(i) + "," + str(u+1) + "\n")
@@ -115,7 +115,7 @@ def output_test(model):
         yhat = F.sigmoid(model(batch.text)) > 0.5
         upload += yhat.tolist()
 
-    with open(args.output_file, "w") as f:
+    with open(args.model + ".txt", "w") as f:
         f.write("Id,Cat\n")
         for i,u in enumerate(upload):
             f.write(str(i) + "," + str(u+1) + "\n")
@@ -162,6 +162,7 @@ class NB(nn.Module):
         self.binarize = binarize
         self.ys = list(range(self.nclass))
         self.xycounts = Parameter(torch.FloatTensor(len(vocab.itos), self.nclass).fill_(alpha))
+        self.binxycounts = Parameter(torch.FloatTensor(len(vocab.itos), self.nclass).fill_(alpha))
         self.ycounts = Parameter(torch.FloatTensor(self.nclass).fill_(0))
 
     def _score(self, x, y):
@@ -184,18 +185,17 @@ class NB(nn.Module):
     def update_counts(self, x, y):
         xd = x.data
         yd = y.data
-        if self.binarize:
-            for j in range(yd.size(0)):
-                tokens = set(xd[:,j].tolist())
-                label = yd[j]
-                for token in tokens:
-                    self.xycounts[token, label] += 1
-                self.ycounts[label] += 1
-        else:
-            idxs = xd * 2
-            idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1
-            self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True)
-            self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True)
+        #if self.binarize:
+        for j in range(yd.size(0)):
+            tokens = set(xd[:,j].tolist())
+            label = yd[j]
+            for token in tokens:
+                self.binxycounts[token, label] += 1
+        #else:
+        idxs = xd * 2
+        idxs[yd.view(1,-1).ne(0).expand_as(xd)] += 1
+        self.xycounts.data.put_(idxs, torch.ones_like(xd).float(), accumulate=True)
+        self.ycounts.data.put_(yd, torch.ones_like(yd).float(), accumulate=True)
 
 class NB2(nn.Module):
     # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
@@ -442,8 +442,10 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
             #clip_param_norm(params, 3)
         train_loss /= len(train_iter)
         print("Train loss: " + str(train_loss.data[0]))
-        val_acc = valid_fn(model, valid_iter)
-        print("Valid acc: " + str(val_acc))
+        train_acc = valid_fn(model, valid_iter)
+        print("Valid acc: " + str(train_acc))
+        valid_acc = valid_fn(model, valid_iter)
+        print("Valid acc: " + str(valid_acc))
         lr *= args.lrd
         #if (epoch+1) % 5 == 0:
             #lr /= 2
@@ -460,7 +462,8 @@ if "NB" in args.model:
     nb = train_nb(model)
     print(validate_nb(nb, train_iter))
     print(validate_nb(nb, valid_iter))
-    if args.output_file:
+    print(validate_nb(nb, test_iter))
+    if args.dooutput:
         output_test_nb(nb)
 else:
     model = list(filter(lambda x: x.__name__ == args.model, models))[0](TEXT.vocab, args.dropout)
@@ -471,5 +474,5 @@ else:
     print(validate(model, train_iter))
     print(validate(model, valid_iter))
     print(validate(model, test_iter))
-    if args.output_file:
+    if args.dooutput:
         output_test(model)
