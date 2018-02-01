@@ -284,7 +284,7 @@ def save_model(model, valid, epoch, nlayers, dropout, lr, lrd):
         "xgiveny" if args.xgiveny else "ygivenx", epoch, valid, nlayers, dropout, lr, lrd)
     torch.save(model.cpu().state_dict(), name)
     # lol, whatever
-    model.gpu()
+    model.cuda()
 
 def train_model(model, valid_fn, loss=nn.CrossEntropyLoss(), epochs=args.epochs, lr=args.lr):
     params = [p for p in model.parameters() if p.requires_grad]
