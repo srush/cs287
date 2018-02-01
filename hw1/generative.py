@@ -16,6 +16,9 @@ from torch.nn.utils import clip_grad_norm
 
 from tqdm import tqdm
 
+import random
+
+random.seed(1111)
 torch.manual_seed(1111)
 torch.cuda.manual_seed_all(1111)
 
@@ -227,10 +230,10 @@ class LstmGen(nn.Module):
 
         self.xgiveny = xgiveny
 
-        self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.rnn = nn.LSTM(300, 300, nlayers, bidirectional=False, dropout=dropout)
+        self.lut = nn.Embedding(self.vsize, nhid)
+        self.rnn = nn.LSTM(nhid, nhid, nlayers, bidirectional=False, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
-        self.decoder = nn.Linear(300, self.vsize)
+        self.decoder = nn.Linear(nhid, self.vsize)
         if tie_weights:
             self.tie_weights = tie_weights
             self.decoder.weight = self.lut.weight
@@ -284,7 +287,7 @@ def save_model(model, valid, epoch, nlayers, dropout, lr, lrd):
         "xgiveny" if args.xgiveny else "ygivenx", epoch, valid, nlayers, dropout, lr, lrd)
     torch.save(model.cpu().state_dict(), name)
     # lol, whatever
-    model.cuda()
+    model.cuda(args.gpu)
 
 def train_model(model, valid_fn, loss=nn.CrossEntropyLoss(), epochs=args.epochs, lr=args.lr):
     params = [p for p in model.parameters() if p.requires_grad]
@@ -324,7 +327,7 @@ def train_model(model, valid_fn, loss=nn.CrossEntropyLoss(), epochs=args.epochs,
         valid_acc = valid_fn(model, valid_iter)
         print("Valid acc: " + str(valid_acc))
         if args.savemodel:
-            save_model(model, valid_acc, epoch, args.nlayers, args.dropout, args.lr, args.lrd)
+            save_model(model, valid_acc[-1], epoch, args.nlayers, args.dropout, args.lr, args.lrd)
 
 model = LstmGen(
     TEXT.vocab, args.nhid, args.nlayers, args.tieweights, args.dropout, args.xgiveny)
