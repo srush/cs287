@@ -266,12 +266,13 @@ class LR(nn.Module):
 
 
 class LR2(nn.Module):
-    def __init__(self, vocab, dropout, binarize=False):
+    def __init__(self, vocab, dropout, binarize=True):
         super(LR2, self).__init__()
         self.vsize = len(vocab.itos)
         # Since this is binary LRRwe can just use BCEWithLogitsLoss
         self.lut = nn.Linear(self.vsize, 1)
         self.bias = Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
         self.binarize = binarize
     
     def transform(self, x):
@@ -289,6 +290,8 @@ class LR2(nn.Module):
         x = torch.transpose(x, 0, 1) # batch_size, vsize
         if self.binarize:
             x = (x > 0).float()
+        if self.dropout is not None:
+            x = self.dropout(x)
         output = self.lut(x).view(input.size(1))
         return output + self.bias
 
@@ -460,6 +463,9 @@ def train_model(model, valid_fn, args, loss=nn.BCEWithLogitsLoss(), epochs=10, l
         checkpoint = torch.load(args.model_dir + args.model_name)
         model.load_state_dict(checkpoint["state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer"])
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.lr
+        print("Load from %s" % (args.model_dir + args.model_name))
 
     best_epoch = -1
     best_val_acc = -1
@@ -513,8 +519,9 @@ def train_model(model, valid_fn, args, loss=nn.BCEWithLogitsLoss(), epochs=10, l
         filename = args.model_dir + args.model_name + ".%s.epoch%d" % (args.model, epoch)
         save_checkpoint({'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict()}, filename)
 
-    print("best epoch: %d " % epoch)
+    print("best epoch: %d  | best_val_acc = %.3lf" % (best_epoch, best_val_acc))
     filename = args.model_dir + args.model_name + ".%s.epoch%d" % (args.model, best_epoch)
+    print("best model: %s" % filename)
     checkpoint = torch.load(filename)
     model.load_state_dict(checkpoint["state_dict"])
 

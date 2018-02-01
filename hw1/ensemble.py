@@ -1,5 +1,7 @@
 import argparse
 
+import math
+
 import torchtext
 from torchtext.vocab import Vectors, GloVe
 
@@ -22,7 +24,7 @@ torch.manual_seed(1111)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-model", choices=['NB', 'NB2', "LR", "CBoW", "CNN", "CNNLOL", "CNNLSTM", "LSTM"], default="NB2", required=False)
+    parser.add_argument("-model", choices=['NB', 'NB2', "LR", "LR2", "CBoW", "CNN", "CNNLOL", "CNNLSTM", "LSTM"])
     parser.add_argument("-gpu", type=int, default=-1)
     parser.add_argument("-lr", type=float, default=1)
     parser.add_argument("-lrd", type=float, default=0.9)
@@ -32,13 +34,21 @@ def parse_args():
     parser.add_argument("-mom", type=float, default=0.9)
     parser.add_argument("-dm", type=float, default=0)
     parser.add_argument("-wd", type=float, default=1e-4)
-    parser.add_argument("-nonag", action="store_false")
+    parser.add_argument("-nonag", action="store_true", default=False)
+    parser.add_argument("-binarize_nb", action="store_true")
+
     parser.add_argument("-clip", type=float, default=0.1)
+    parser.add_argument("-optim", type=str, required=False, default="SGD")
     parser.add_argument("-output_file", type=str, default=None)
+    parser.add_argument("-model_dir", type=str, required=False, default="model/")
+    parser.add_argument("-model_name", type=str, required=False, default="tmp")
+    parser.add_argument("-load_model", type=bool, required=False, default=False)
     args = parser.parse_args()
     return args
 
 args = parse_args()
+
+
 
 # Our input $x$
 TEXT = torchtext.data.Field()
@@ -54,9 +64,9 @@ print('vars(train[0])', vars(train[0]))
 
 TEXT.build_vocab(train)
 LABEL.build_vocab(train)
-LABEL.vocab.itos = ['negative', 'positive']
-LABEL.vocab.stoi['positive'] = 1
-LABEL.vocab.stoi['negative'] = 0
+LABEL.vocab.itos = ['positive', 'negative']
+LABEL.vocab.stoi['positive'] = 0
+LABEL.vocab.stoi['negative'] = 1
 
 print('len(TEXT.vocab)', len(TEXT.vocab))
 print('len(LABEL.vocab)', len(LABEL.vocab))
@@ -64,20 +74,11 @@ print('len(LABEL.vocab)', len(LABEL.vocab))
 labels = [ex.label for ex in train.examples]
 
 train_iter, _, _ = torchtext.data.BucketIterator.splits(
-    (train, valid, test), batch_size=args.bsz, device=args.gpu)
+    (train, valid, test), batch_size=args.bsz, device=args.gpu, repeat=False)
 
 _, valid_iter, test_iter = torchtext.data.BucketIterator.splits(
     (train, valid, test), batch_size=10, device=args.gpu)
 
-"""
-batch = next(iter(train_iter))
-print("Size of text batch [max sent length, batch size]", batch.text.size())
-print("Second in batch", batch.text[:, 0])
-print("Converted back to string: ", " ".join([TEXT.vocab.itos[i] for i in batch.text[:, 0].data]))
-print("Size of label batch [batch size]", batch.label.size())
-print("Second in batch", batch.label[0])
-print("Converted back to string: ", LABEL.vocab.itos[batch.label.data[0]])
-"""
 
 # Build the vocabulary with word embeddings
 url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.simple.vec'
@@ -89,6 +90,7 @@ TEXT.vocab.load_vectors(vectors=Vectors('wiki.en.vec', url=url))
 complex_vec = TEXT.vocab.vectors
 
 loss = nn.BCEWithLogitsLoss()
+
 
 def output_test_nb(model):
     "All models should be able to be run with following command."
@@ -117,8 +119,7 @@ def output_test(model):
         for i,u in enumerate(upload):
             f.write(str(i) + "," + str(u+1) + "\n")
 
-
-
+# TODO: fix this; forward no longer returns # of correct example
 def validate_nb(model, valid):
     correct = 0.
     total = 0.
@@ -142,6 +143,22 @@ def train_nb(nb):
         nb.get_probs()
     return nb
     
+
+def validate(model, valid):
+    model.eval()
+    correct = 0.
+    total = 0.
+    if True:
+    #with torch.no_grad():
+        for batch in valid:
+            x = batch.text
+            y = batch.label
+            yhat = F.sigmoid(model(x)) > 0.5
+            results = yhat.long() == y
+            correct += results.float().sum().data[0]
+            total += results.size(0)
+    return correct, total, correct / total
+
 class NB2(nn.Module):
     # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
     def __init__(self, vocab, dropout, alpha=1.):
@@ -160,8 +177,8 @@ class NB2(nn.Module):
         length, batch_size = x.size()
         f = torch.zeros((self.vsize, batch_size))
         for i in range(batch_size):  # TODO: make it more efficient
-            f[:,i][x[:,i]] = 1  
-        #f = (f > 0).float()
+            f[:,i][x[:,i]] += 1  
+        f = (f > 0).float()
         return f
 
     def get_probs(self):
@@ -183,11 +200,19 @@ class NB2(nn.Module):
 
         return correct
  
-    def forward(self, x, y):   # of correct examples,
+    def get_score(self, x, y):   # of correct examples,
         x = x.data
         y = y.data
         return self._score(x, y)
-        
+    
+    def forward(self, x):
+        x = x.data
+        length, batch_size = x.size()
+        f = self.transform(x)
+        predict = torch.sign(torch.matmul(self.w, f) + self.b)
+        predict = (predict > 0).long()
+        return predict
+
     def update_counts(self, x, y):
         xd = x.data  # (length, batch_size)
         yd = y.data.ne(0) # (batch_size)
@@ -202,19 +227,97 @@ class NB2(nn.Module):
                 self.N[0] += 1
 
 
+class LR2(nn.Module):
+    def __init__(self, vocab, dropout, binarize=True):
+        super(LR2, self).__init__()
+        self.vsize = len(vocab.itos)
+        # Since this is binary LRRwe can just use BCEWithLogitsLoss
+        self.lut = nn.Linear(self.vsize, 1)
+        self.bias = Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+        self.binarize = binarize
+    
+    def transform(self, x):
+        length, batch_size = x.size()
+        f = torch.zeros((self.vsize, batch_size))
+        for i in range(batch_size):  # TODO: make it more efficient
+            f[:,i][x[:,i].data] += 1  
+        f = (f > 0).float()
+        return V(f)
 
-model = NB2(TEXT.vocab, len(LABEL.vocab.itos))
-nb = train_nb(model)
-print(validate_nb(nb, train_iter))
-print(validate_nb(nb, valid_iter))
-print(validate_nb(nb, test_iter))
-if args.output_file:
-    output_test_nb(nb)
+    def forward(self, input):
+        # input will be seqlen x bsz, so we want to use the weights from the lut
+        # and sum them up to get the logits.
+        x = self.transform(input)  # vsize, batch_size
+        x = torch.transpose(x, 0, 1) # batch_size, vsize
+        if self.binarize:
+            x = (x > 0).float()
+        if self.dropout is not None:
+            x = self.dropout(x)
+        output = self.lut(x).view(input.size(1))
+        return output + self.bias
 
-def save_checkpoint(state, filename):
-    torch.save(state, filename)
-    print("Saved to %s" % filename)
 
-filename = "model/final/NB2"
-save_checkpoint({'state_dict': model.state_dict(), "w" : model.w, "b" : model.b}, filename)
+def validate_ensemble(models, data_iter):
+    for model in models:
+        model.eval()
+    correct = 0.
+    total = 0.
+    if True:  # HACK
+    #with torch.no_grad():
+        for batch in data_iter:
+            x = batch.text
+            y = batch.label
+
+            batch_size = y.size(0)
+
+            yhats = torch.zeros((len(models), batch_size)).long()
+            for i, model in enumerate(models):
+                if i != 0:
+                    yhat = (F.sigmoid(model(x)) > 0.5).long().data
+                else:  # NB: assume models[0] = NB2
+                    yhat = 1 - model(x).long()  # NB: for NB2, labels are opposite
+                yhats[i] = yhat
+            #embed()
+            agg_yhat = torch.sum(yhats, dim=0)
+            agg_yhat = agg_yhat >= (len(models) / 2)
+            results = V(agg_yhat).long() == y
+            correct += results.float().sum().data[0]
+            total += results.size(0)
+    return correct, total, correct / total
+
+
+def load_model(model, filename):
+    checkpoint = torch.load(filename)
+    model.load_state_dict(checkpoint["state_dict"])
+
+
+models = []
+# store all model in model/final/
+
+# NB2
+model_nb2 = NB2(TEXT.vocab, len(LABEL.vocab.itos))
+checkpoint = torch.load("model/final/NB2")
+model_nb2.w = checkpoint["w"]
+model_nb2.b = checkpoint["b"]
+
+models.append(model_nb2)
+
+# LR
+model_lr2 = LR2(TEXT.vocab, args.dropout)
+load_model(model_lr2, "model/final/LR2")
+models.append(model_lr2)
+
+# CNN
+# TODO: add CNN, CNNLOL, other versions of LR, CBOW, NB
+
+# train_acc = validate_ensemble(models, train_iter) 
+# print("Train ACC: %.3lf" % train_acc)
+valid_acc = validate_ensemble(models, valid_iter)
+print("Valid ACC:", valid_acc)
+test_acc = validate_ensemble(models, test_iter)
+print("Test ACC:" , test_acc)
+
+
+
 
