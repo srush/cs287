@@ -25,6 +25,7 @@ def parse_args():
 
     parser.add_argument("--nhid", type=int, default=256)
     parser.add_argument("--nlayers", type=int, default=1)
+    parser.add_argument("--xgiveny", action="store_true")
 
     parser.add_argument("--tieweights", action="store_true")
 
@@ -50,7 +51,9 @@ def parse_args():
     parser.add_argument("--dm", type=float, default=0)
     parser.add_argument("--nonag", action="store_true", default=False)
 
-    parser.add_argument("--dooutput", action="store_true")
+    # Execution options
+    parser.add_argument("--evaluatemodel", type=str, default=None)
+    parser.add_argument("--savemodel", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -109,16 +112,6 @@ train_iter, _, _ = torchtext.data.BucketIterator.splits(
 _, valid_iter, test_iter = torchtext.data.BucketIterator.splits(
     (train, valid, test), batch_size=10, device=-1)
 
-"""
-batch = next(iter(train_iter))
-print("Size of text batch [max sent length, batch size]", batch.text.size())
-print("Second in batch", batch.text[:, 0])
-print("Converted back to string: ", " ".join([TEXT.vocab.itos[i] for i in batch.text[:, 0].data]))
-print("Size of label batch [batch size]", batch.label.size())
-print("Second in batch", batch.label[0])
-print("Converted back to string: ", LABEL.vocab.itos[batch.label.data[0]])
-"""
-
 # Build the vocabulary with word embeddings
 url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.simple.vec'
 TEXT.vocab.load_vectors(vectors=Vectors('wiki.simple.vec', url=url))
@@ -127,16 +120,49 @@ TEXT.vocab.load_vectors(vectors=Vectors('wiki.simple.vec', url=url))
 #url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.vec'
 #TEXT.vocab.load_vectors(vectors=Vectors('wiki.en.vec', url=url))
 #complex_vec = TEXT.vocab.vectors
-
-
+#
 def output_test(model):
     "All models should be able to be run with following command."
     upload = []
+    loss.reduce = False
     for batch in test_iter:
         # Your prediction data here (don't cheat!)
-        yhat = F.sigmoid(model(batch.text)) > 0.5
+        x = batch.text
+        y = batch.label
+        x, y = model.prep_sample(x, y)
+        preds = model(x)
+        # if the score of the positive is higher than negative
+        # we want to predict the label 0
+        yhat = preds[-1, :, positive_id] < preds[-1, :, negative_id] 
         upload += yhat.tolist()
+    loss.reduce = True
+    with open(args.model + ".txt", "w") as f:
+        f.write("Id,Cat\n")
+        for i,u in enumerate(upload):
+            f.write(str(i) + "," + str(u+1) + "\n")
 
+def output_test_gen(model):
+    "All models should be able to be run with following command."
+    upload = []
+    loss.reduce = False
+    for batch in test_iter:
+        # Your prediction data here (don't cheat!)
+        x = batch.text
+        y = batch.label
+        x, y = model.prep_sample(x, y)
+        x[0,:].fill_(positive_id)
+        pospreds = model(x)
+        x[0,:].fill_(negative_id)
+        negpreds = model(x)
+        T, N, V = pospreds.size()
+        # negative log probabilities? or something lol
+        nlpxgivenpos = loss(pospreds.view(-1, V), y.view(-1)).view(T, N).sum(0)
+        nlpxgivenneg = loss(negpreds.view(-1, V), y.view(-1)).view(T, N).sum(0)
+        # if the score of the positive is higher than negative
+        # we want to predict the label 0
+        yhat = nlpxgivenpos > nlpxgivenneg
+        upload += yhat.tolist()
+    loss.reduce = True
     with open(args.model + ".txt", "w") as f:
         f.write("Id,Cat\n")
         for i,u in enumerate(upload):
@@ -152,7 +178,6 @@ def validate(model, valid):
             y = batch.label
             x, y = model.prep_sample(x, y)
             preds = model(x)
-            T, N, V = preds.size()
             # if the score of the positive is higher than negative
             # we want to predict the label 0
             yhat = preds[-1, :, positive_id] < preds[-1, :, negative_id] 
@@ -161,10 +186,38 @@ def validate(model, valid):
             total += results.size(0)
     return correct, total, correct / total
 
+def validate_gen(model, valid):
+    model.eval()
+    correct = 0.
+    total = 0.
+    loss.reduce = False
+    with torch.no_grad():
+        for batch in valid:
+            x = batch.text
+            y = batch.label
+            x, y = model.prep_sample(x, y)
+            x[0,:].fill_(positive_id)
+            pospreds = model(x)
+            x[0,:].fill_(negative_id)
+            negpreds = model(x)
+            T, N, V = pospreds.size()
+            # negative log probabilities? or something lol
+            nlpxgivenpos = loss(pospreds.view(-1, V), y.view(-1)).view(T, N).sum(0)
+            nlpxgivenneg = loss(negpreds.view(-1, V), y.view(-1)).view(T, N).sum(0)
+            # if the score of the positive is higher than negative
+            # we want to predict the label 0
+            yhat = nlpxgivenpos > nlpxgivenneg
+            results = yhat.long().cpu() == batch.label
+            correct += results.float().sum().data[0]
+            total += results.size(0)
+    loss.reduce = True
+    return correct, total, correct / total
+
+
 # Models
 class LstmGen(nn.Module):
     # ignore nhid, lol
-    def __init__(self, vocab, nhid, nlayers, tie_weights, dropout=0):
+    def __init__(self, vocab, nhid, nlayers, tie_weights, dropout=0, xgiveny=False):
         super(LstmGen, self).__init__()
         self.vsize = len(vocab.itos)
         self.bos = vocab.stoi[bos]
@@ -172,9 +225,11 @@ class LstmGen(nn.Module):
         self.positive = vocab.stoi[positive]
         self.negative = vocab.stoi[negative]
 
+        self.xgiveny = xgiveny
+
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.lut.weight.data.copy_(vocab.vectors)
         self.rnn = nn.LSTM(300, 300, nlayers, bidirectional=False, dropout=dropout)
+        self.dropout = nn.Dropout(dropout)
         self.decoder = nn.Linear(300, self.vsize)
         if tie_weights:
             self.tie_weights = tie_weights
@@ -187,25 +242,49 @@ class LstmGen(nn.Module):
     def forward(self, input):
         vectors = self.lut(input)
         out, (h, c) = self.rnn(vectors)
-        return self.decoder(out)
+        droppedout = self.dropout(out)
+        return self.decoder(droppedout)
 
     def prep_sample(self, x, y):
         T, N = x.size()
-        self.workbuffer.resize_(T+3, N)
-        # Samples should look like
-        #     a b c d
-        # coming in, but
-        #     <bos> a b c d <eos> <positive>
-        # coming out.
-        self.workbuffer[1:-2,:].copy_(x.data)
-        self.workbuffer[0,:].fill_(self.bos)
-        self.workbuffer[-2,:].fill_(self.eos)
-        self.workbuffer[-1].masked_fill_(y.data.eq(0), self.positive)
-        self.workbuffer[-1].masked_fill_(y.data.eq(1), self.negative)
-        self.buffer.resize_(self.workbuffer.size())
-        self.buffer.copy_(self.workbuffer, async=True)
-        return V(self.buffer[:-1,:]), V(self.buffer[1:,:])
+        if self.xgiveny:
+            # Samples should look like
+            #     a b c d
+            # coming in, but
+            #     <positive> a b c d <eos>
+            # coming out.
+            self.workbuffer.resize_(T+2, N)
+            self.workbuffer[1:-1,:].copy_(x.data)
+            self.workbuffer[0].masked_fill_(y.data.eq(0), self.positive)
+            self.workbuffer[0].masked_fill_(y.data.eq(1), self.negative)
+            self.workbuffer[-1,:].fill_(self.eos)
+            self.buffer.resize_(self.workbuffer.size())
+            self.buffer.copy_(self.workbuffer, async=True)
+            return V(self.buffer[:-1,:]), V(self.buffer[1:,:])
 
+        else:
+            # Samples should look like
+            #     a b c d
+            # coming in, but
+            #     <bos> a b c d <eos> <positive>
+            # coming out.
+            self.workbuffer.resize_(T+3, N)
+            self.workbuffer[1:-2,:].copy_(x.data)
+            self.workbuffer[0,:].fill_(self.bos)
+            self.workbuffer[-2,:].fill_(self.eos)
+            self.workbuffer[-1].masked_fill_(y.data.eq(0), self.positive)
+            self.workbuffer[-1].masked_fill_(y.data.eq(1), self.negative)
+            self.buffer.resize_(self.workbuffer.size())
+            self.buffer.copy_(self.workbuffer, async=True)
+            return V(self.buffer[:-1,:]), V(self.buffer[1:,:])
+
+
+def save_model(model, valid, epoch, nlayers, dropout, lr, lrd):
+    name = "generative_{}_{}_valid_{}_nl{}_do{}_lr{}_lrd{}".format(
+        "xgiveny" if args.xgiveny else "ygivenx", epoch, valid, nlayers, dropout, lr, lrd)
+    torch.save(model.cpu().state_dict(), name)
+    # lol, whatever
+    model.gpu()
 
 def train_model(model, valid_fn, loss=nn.CrossEntropyLoss(), epochs=args.epochs, lr=args.lr):
     params = [p for p in model.parameters() if p.requires_grad]
@@ -244,13 +323,11 @@ def train_model(model, valid_fn, loss=nn.CrossEntropyLoss(), epochs=args.epochs,
         #print("Train acc: " + str(train_acc))
         valid_acc = valid_fn(model, valid_iter)
         print("Valid acc: " + str(valid_acc))
+        if args.savemodel:
+            save_model(model, valid_acc, epoch, args.nlayers, args.dropout, args.lr, args.lrd)
 
-
-def save_model(model, train, valid):
-    name = "{}_train{}_valid_{}".format(args.model, train, valid)
-    torch.save(model.cpu().state_dict(), name)
-
-model = LstmGen(TEXT.vocab, args.nhid, args.nlayers, args.dropout, args.tieweights)
+model = LstmGen(
+    TEXT.vocab, args.nhid, args.nlayers, args.tieweights, args.dropout, args.xgiveny)
 if args.gpu > 0:
     model.cuda(args.gpu)
 print(model)
@@ -263,11 +340,20 @@ if args.gpu >= 0:
     weight = weight.cuda(args.gpu)
 loss = nn.CrossEntropyLoss(weight=weight)
 
-train_model(model, validate, loss=loss, epochs=args.epochs, lr=args.lr)
-_, _, train_acc = validate(model, train_iter)
-_, _, valid_acc = validate(model, valid_iter)
-_, _, test_acc = validate(model, test_iter)
-print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
-#save_model(model, train_acc, valid_acc)
-if args.dooutput:
-    output_test(model)
+if args.evaluatemodel:
+    model.load_state_dict(torch.load(args.evaluatemodel))
+    if args.xgiveny:
+        output_test_gen(model)
+    else:
+        output_test(model)
+else:
+    train_model(model, validate if not args.xgiveny else validate_gen, loss=loss, epochs=args.epochs, lr=args.lr)
+    if args.xgiveny:
+        _, _, train_acc = validate_gen(model, train_iter)
+        _, _, valid_acc = validate_gen(model, valid_iter)
+        _, _, test_acc = validate_gen(model, test_iter)
+    else:
+        _, _, train_acc = validate(model, train_iter)
+        _, _, valid_acc = validate(model, valid_iter)
+        _, _, test_acc = validate(model, test_iter)
+    print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
