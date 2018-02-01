@@ -85,11 +85,11 @@ print("Converted back to string: ", LABEL.vocab.itos[batch.label.data[0]])
 # Build the vocabulary with word embeddings
 url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.simple.vec'
 TEXT.vocab.load_vectors(vectors=Vectors('wiki.simple.vec', url=url))
-simple_vec = TEXT.vocab.vectors.clone()
+#simple_vec = TEXT.vocab.vectors.clone()
 
-url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.vec'
-TEXT.vocab.load_vectors(vectors=Vectors('wiki.en.vec', url=url))
-complex_vec = TEXT.vocab.vectors
+#url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.vec'
+#TEXT.vocab.load_vectors(vectors=Vectors('wiki.en.vec', url=url))
+#complex_vec = TEXT.vocab.vectors
 
 loss = nn.BCEWithLogitsLoss()
 
@@ -153,6 +153,16 @@ def validate(model, valid):
     return correct, total, correct / total
 
 # Models
+class NBBigram(nn.Module):
+    def __init__(self, vocab, dropout, binarize=True, alpha=1):
+        pass
+
+    def _score(self, x, y):
+        pass
+
+    def forward(self, input):
+        pass
+
 class NB(nn.Module):
     # See http://www.aclweb.org/anthology/P/P12/P12-2.pdf#page=118
     def __init__(self, vocab, dropout, binarize=True, alpha=1):
@@ -262,9 +272,11 @@ class LR(nn.Module):
             return self.lut(input).squeeze(-1).sum(0) + self.bias
 
 class CBoW(nn.Module):
-    def __init__(self, vocab, dropout=0, binarize=True):
+    def __init__(self, vocab, dropout=0, binarize=True, average=False):
         super(CBoW, self).__init__()
         self.vsize = len(vocab.itos)
+        self.binarize = binarize
+        self.average = average
         self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
         self.static_lut.weight.data.copy_(vocab.vectors)
         self.static_lut.requires_grad = False
@@ -279,7 +291,10 @@ class CBoW(nn.Module):
         )
 
     def forward(self, input):
-        hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).sum(0)], -1)
+        if self.average:
+            hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).mean(0)], -1)
+        else:
+            hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).sum(0)], -1)
         if self.dropout:
             hidden = self.dropout(hidden)
         return self.proj(hidden).squeeze(-1)
@@ -290,9 +305,9 @@ class CNN(nn.Module):
         self.vsize = len(vocab.itos)
         self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
         self.static_lut.weight.data.copy_(vocab.vectors)
-        #self.static_lut.requires_grad = False
+        self.static_lut.requires_grad = False
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.lut.weight.data.copy_(simple_vec)
+        self.lut.weight.data.copy_(vocab.vectors)
         #self.lut.requires_grad = False
         self.convs = nn.ModuleList([
             nn.Conv1d(600, 100, 3),
@@ -311,13 +326,13 @@ class CNN(nn.Module):
 
 class CNNLOL(nn.Module):
     def __init__(self, vocab, dropout=0):
-        super(CNN, self).__init__()
+        super(CNNLOL, self).__init__()
         self.vsize = len(vocab.itos)
         self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
         self.static_lut.weight.data.copy_(vocab.vectors)
         self.static_lut.requires_grad = False
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.lut.weight.data.copy_(simple_vec)
+        self.lut.weight.data.copy_(vocab.vectors)
         #self.lut.requires_grad = False
         self.convs = nn.ModuleList([
             nn.Conv1d(600, 200, 3, padding=1),
@@ -375,8 +390,8 @@ class LSTM(nn.Module):
         self.static_lut.weight.data.copy_(vocab.vectors)
         self.static_lut.requires_grad = False
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.lut.weight.data.copy_(simple_vec)
-        self.lut.requires_grad = False
+        self.lut.weight.data.copy_(vocab.vectors)
+        #self.lut.requires_grad = False
         self.lstm = nn.LSTM(600, 300, 2, bidirectional=True, dropout=dropout)
         self.proj = nn.Sequential(
             nn.Dropout(dropout),
@@ -409,7 +424,8 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
     params = [p for p in model.parameters() if p.requires_grad]
     #optimizer = optim.Adagrad(params, lr = lr, weight_decay = args.wd)
     #optimizer = optim.Adadelta(params, lr = lr, weight_decay = args.wd)
-    optimizer = optim.SGD(params, lr = lr, weight_decay = args.wd, momentum=args.mom, dampening=args.dm, nesterov=not args.nonag)
+    #optimizer = optim.SGD(params, lr = lr, weight_decay = args.wd, momentum=args.mom, dampening=args.dm, nesterov=not args.nonag)
+    optimizer = optim.Adam(params, lr = lr, weight_decay = args.wd, amsgrad=False)
     #optimizer = optim.LBFGS(params)
     #for p in optimizer.param_groups[0]['params']:
     #    optimizer.state[p]['sum'].fill_(1e-10)
@@ -443,7 +459,7 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
         train_loss /= len(train_iter)
         print("Train loss: " + str(train_loss.data[0]))
         train_acc = valid_fn(model, valid_iter)
-        print("Valid acc: " + str(train_acc))
+        print("Train acc: " + str(train_acc))
         valid_acc = valid_fn(model, valid_iter)
         print("Valid acc: " + str(valid_acc))
         lr *= args.lrd
@@ -455,6 +471,10 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
 
 
 models = [NB, NB2, LR, CBoW, CNN, CNNLOL, CNNLSTM, LSTM]
+
+def save_model(model, train, valid):
+    name = "{}_train{}_valid_{}".format(args.model, train, valid)
+    torch.save(model.float().state_dict(), name)
 
 if "NB" in args.model:
     model = list(filter(lambda x: x.__name__ == args.model, models))[0](
@@ -471,8 +491,10 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    print(validate(model, train_iter))
-    print(validate(model, valid_iter))
-    print(validate(model, test_iter))
+    _, _, train_acc = validate(model, train_iter)
+    _, _, valid_acc = validate(model, valid_iter)
+    _, _, test_acc = validate(model, test_iter)
+    print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
+    save_model(model, train_acc, valid_acc)
     if args.dooutput:
         output_test(model)
