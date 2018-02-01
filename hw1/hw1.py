@@ -142,14 +142,25 @@ def validate(model, valid):
     model.eval()
     correct = 0.
     total = 0.
+    sentences = []
     with torch.no_grad():
         for batch in valid:
             x = batch.text
             y = batch.label
-            yhat = F.sigmoid(model(x)) > 0.5
-            results = yhat.long() == y
+            preds = F.sigmoid(model(x))
+            yhat = preds > 0.5
+            results = yhat.long().cpu() == y.cpu()
             correct += results.float().sum().data[0]
             total += results.size(0)
+            if results.eq(0).sum() > 0:
+                bad_sentences = x[:, results.eq(0).cuda(args.gpu)]
+                bad_labels = y[results.eq(0).cuda(args.gpu)]
+                bad_preds = preds[results.eq(0).cuda(args.gpu)]
+                for i in range(bad_sentences.size(1)):
+                    sentence = " ".join(TEXT.vocab.itos[id] for id in bad_sentences[:, i].tolist())
+                    sentences.append((sentence, bad_labels[i].data[0], bad_preds[i].data[0]))
+    with open("sentences.txt", "w") as f:
+        f.write("\n".join(str(s) for s in sentences))
     return correct, total, correct / total
 
 # Models
@@ -291,6 +302,14 @@ class CBoW(nn.Module):
         )
 
     def forward(self, input):
+        if self.binarize:
+            output = V(torch.FloatTensor(input.size(1)))
+            for j in range(input.size(1)):
+                tokens = V(torch.cuda.LongTensor(list(set(input[:,j].tolist()))).cuda(args.gpu))
+                hidden = torch.cat([self.lut(tokens).sum(0), self.static_lut(tokens).sum(0)], -1)
+                output[j] = self.proj(hidden)
+            return output
+
         if self.average:
             hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).mean(0)], -1)
         else:
@@ -359,24 +378,22 @@ class CNNLSTM(nn.Module):
         self.static_lut.weight.data.copy_(vocab.vectors)
         self.static_lut.requires_grad = False
         self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
-        self.lut.weight.data.copy_(simple_vec)
-        self.lut.requires_grad = False
+        self.lut.weight.data.copy_(vocab.vectors)
         self.convs = nn.ModuleList([
-            nn.Conv1d(600, 200, 3, padding=1),
-            nn.Conv1d(600, 200, 5, padding=2),
+            nn.Conv1d(600, 100, 3, padding=1),
+            nn.Conv1d(600, 100, 5, padding=2),
         ])
-        self.lstm = nn.LSTM(1000, 500, bidirectional=True)
+        self.lstm = nn.LSTM(200, 100, bidirectional=True)
         self.proj = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(2000, 1000),
+            nn.Linear(400, 200),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(1000, 1)
+            nn.Linear(200, 1)
         )
 
     def forward(self, input):
         word_rep = torch.cat([self.lut(input), self.static_lut(input)], -1).permute(1, 2, 0)
-        cnns = F.relu(torch.cat([conv(word_rep) for conv in self.convs] + [word_rep], 1))
+        cnns = F.relu(torch.cat([conv(word_rep) for conv in self.convs], 1))
         _, (h, c) = self.lstm(cnns.permute(2, 0, 1))
         z = torch.cat([h.permute(1,0,2), c.permute(1,0,2)], -1).view(input.size(1), -1)
         return self.proj(z).squeeze(-1)
@@ -451,6 +468,7 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
                 nonlocal train_loss
                 optimizer.zero_grad()
                 bloss = loss(model(x), y.float())
+                #bloss = loss(model(x), y.float().cpu())
                 bloss.backward()
                 train_loss += bloss
                 return bloss
@@ -474,7 +492,7 @@ models = [NB, NB2, LR, CBoW, CNN, CNNLOL, CNNLSTM, LSTM]
 
 def save_model(model, train, valid):
     name = "{}_train{}_valid_{}".format(args.model, train, valid)
-    torch.save(model.float().state_dict(), name)
+    torch.save(model.cpu().state_dict(), name)
 
 if "NB" in args.model:
     model = list(filter(lambda x: x.__name__ == args.model, models))[0](
@@ -491,10 +509,10 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    _, _, train_acc = validate(model, train_iter)
+    #_, _, train_acc = validate(model, train_iter)
     _, _, valid_acc = validate(model, valid_iter)
-    _, _, test_acc = validate(model, test_iter)
-    print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
-    save_model(model, train_acc, valid_acc)
+    #_, _, test_acc = validate(model, test_iter)
+    #print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
+    #save_model(model, train_acc, valid_acc)
     if args.dooutput:
         output_test(model)
