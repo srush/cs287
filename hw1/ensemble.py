@@ -257,6 +257,60 @@ class LR2(nn.Module):
         output = self.lut(x).view(input.size(1))
         return output + self.bias
 
+class CBoW(nn.Module):
+    def __init__(self, vocab, dropout=0, binarize=True, average=False):
+        super(CBoW, self).__init__()
+        self.vsize = len(vocab.itos)
+        self.binarize = binarize
+        self.average = average
+        self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.static_lut.weight.data.copy_(vocab.vectors)
+        self.static_lut.requires_grad = False
+        self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.lut.weight.data.copy_(vocab.vectors)
+        self.lut.weight.data += self.lut.weight.data.new(self.lut.weight.data.size()).normal_(0, 0.01)
+        #self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+        self.proj = nn.Sequential(
+            nn.Linear(600, 600),
+            nn.ReLU(),
+            nn.Linear(600, 1)
+        )
+
+    def forward(self, input):
+        if self.average:
+            hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).mean(0)], -1)
+        else:
+            hidden = torch.cat([self.lut(input).sum(0), self.static_lut(input).sum(0)], -1)
+        if self.dropout:
+            hidden = self.dropout(hidden)
+        return self.proj(hidden).squeeze(-1)
+
+class CNNLOL(nn.Module):
+    def __init__(self, vocab, dropout=0):
+        super(CNN, self).__init__()
+        self.vsize = len(vocab.itos)
+        self.static_lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.static_lut.weight.data.copy_(vocab.vectors)
+        self.static_lut.requires_grad = False
+        self.lut = nn.Embedding(self.vsize, vocab.vectors.size(1))
+        self.lut.weight.data.copy_(simple_vec)
+        #self.lut.requires_grad = False
+        self.convs = nn.ModuleList([
+            nn.Conv1d(600, 200, 3, padding=1),
+            nn.Conv1d(600, 200, 5, padding=2),
+        ])
+        self.proj = nn.Sequential(
+            nn.Linear(1000, 500),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(500, 1)
+        )
+
+    def forward(self, input):
+        word_rep = torch.cat([self.lut(input), self.static_lut(input)], -1).permute(1, 2, 0)
+        cnns, _ = torch.cat([conv(word_rep) for conv in self.convs] + [word_rep], 1).max(2)
+        return self.proj(cnns).squeeze(-1)
+
 
 def validate_ensemble(models, data_iter):
     for model in models:
@@ -290,6 +344,7 @@ def validate_ensemble(models, data_iter):
 def load_model(model, filename):
     checkpoint = torch.load(filename)
     model.load_state_dict(checkpoint["state_dict"])
+    print("Model Loaded from %s" % filename)
 
 
 models = []
@@ -308,8 +363,20 @@ model_lr2 = LR2(TEXT.vocab, args.dropout)
 load_model(model_lr2, "model/final/LR2")
 models.append(model_lr2)
 
-# CNN
-# TODO: add CNN, CNNLOL, other versions of LR, CBOW, NB
+# CBOW
+model_cbow = CBoW(TEXT.vocab, len(LABEL.vocab.itos))
+checkpoint = torch.load("model/final/CBoW")
+embed()
+model.load_state_dict(checkpoint)
+models.append(model_cbow)
+
+# CNNLOL
+model_cnnlol = CNNLOL(TEXT.vocab, len(LABEL.vocab.itos))
+checkpoint = torch.load("model/final/CNNLOL")
+model.load_state_dict(checkpoint)
+models.append(model_cnnlol)
+
+
 
 # train_acc = validate_ensemble(models, train_iter) 
 # print("Train ACC: %.3lf" % train_acc)
@@ -317,6 +384,7 @@ valid_acc = validate_ensemble(models, valid_iter)
 print("Valid ACC:", valid_acc)
 test_acc = validate_ensemble(models, test_iter)
 print("Test ACC:" , test_acc)
+
 
 
 
