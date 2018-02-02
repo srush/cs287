@@ -19,6 +19,7 @@ from tqdm import tqdm
 from IPython import embed
 import numpy as np
 
+NBWEIGHT = 1
 torch.manual_seed(1111)
 #torch.cuda.manual_seed_all(1111)
 
@@ -370,6 +371,9 @@ def validate_ensemble(models, data_iter, out=True):
         sentence = " ".join(word_list)
         return sentence
 
+    from sets import Set
+    stop_words = []
+
     if True:  # HACK
     #with torch.no_grad():
         for batch in tqdm(data_iter):
@@ -383,11 +387,11 @@ def validate_ensemble(models, data_iter, out=True):
                 if i != 0:
                     yhat = (F.sigmoid(model(x)) > 0.5).long().data
                 else:  # NB: assume models[0] = NB2
-                    yhat = 1 - model(x).long()  # NB: for NB2, labels are opposite
+                    yhat = (1 - model(x).long()) * NBWEIGHT  # NB: for NB2, labels are opposite
                 yhats[i] = yhat
             #embed()
             agg_yhat = torch.sum(yhats, dim=0)
-            agg_yhat = agg_yhat >= (len(models) / 2)
+            agg_yhat = agg_yhat >= ((len(models) + NBWEIGHT - 1) / 2)
             results = V(agg_yhat).long() == y
             if out:
                 for i in tqdm(range(batch_size), desc="output_bad"):
@@ -400,17 +404,35 @@ def validate_ensemble(models, data_iter, out=True):
                         nb_values = []
                         lr_values = []
                         for v in xlist:
-                            nb_values.append("%.3lf" % (-models[0].w[v]))
+                            nb_values.append("%.3lf" % (-models[0].w[v])) 
                             lr_values.append("%.3lf" % models[1].lut.weight[0][v].data[0])
                         print("nb_values: %s" % " ".join(nb_values))
                         print("lr_values: %s" % " ".join(lr_values))
 
+                        # argmin negative values -> positive (label=0)
+                        # argmax positive values -> negative (label=1)
+                        if y[i].data[0] == 0:
+                            idx = np.argmax(nb_values)
+                        else:
+                            idx = np.argmin(nb_values)
+                        #embed()
+                        vid = xlist[idx]
+                        stop_words.append(TEXT.vocab.itos[vid])
+                        print("add %s | idx %d | vid %d" % (TEXT.vocab.itos[vid], idx, vid))
                         print("our: %d | true: %d" % (agg_yhat[i], y[i].data[0]))
                         print("all yhats: %s" % str(yhats[:,i]))
                         print("--------- BAD  END--------\n\n")
 
             correct += results.float().sum().data[0]
             total += results.size(0)
+    print("list=", stop_words)
+    newf = open("stop_words.greedy", "w")
+
+    for word in stop_words:
+        newf.write("%s\n" % word)
+    newf.close()
+
+
     return correct, total, correct / total
 
 def output_ensemble(models):
@@ -435,11 +457,11 @@ def output_ensemble(models):
                 if i != 0:
                     yhat = (F.sigmoid(model(x)) > 0.5).long().data
                 else:  # NB: assume models[0] = NB2
-                    yhat = 1 - model(x).long()  # NB: for NB2, labels are opposite
+                    yhat = (1 - model(x).long()) * NBWEIGHT  # NB: for NB2, labels are opposite
                 yhats[i] = yhat
             #embed()
             agg_yhat = torch.sum(yhats, dim=0)
-            agg_yhat = agg_yhat >= (len(models) / 2)
+            agg_yhat = agg_yhat >= ((len(models) + NBWEIGHT - 1) / 2)
             upload += agg_yhat.tolist()
 
     with open(args.output_file, "w") as f:
@@ -494,10 +516,10 @@ checkpoint = torch.load("model/final/LSTM")
 model_lstm.load_state_dict(checkpoint)
 models.append(model_lstm)
 
-# train_acc = validate_ensemble(models, train_iter) 
-# print("Train ACC: %.3lf" % train_acc)
-valid_acc = validate_ensemble(models, valid_iter, out=True)
-print("Valid ACC:", valid_acc)
+train_acc = validate_ensemble(models, train_iter, out=True) 
+print("Train ACC:", train_acc)
+#valid_acc = validate_ensemble(models, valid_iter, out=True)
+#print("Valid ACC:", valid_acc)
 test_acc = validate_ensemble(models, test_iter, out=False)
 print("Test ACC:" , test_acc)
 
