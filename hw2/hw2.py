@@ -61,21 +61,29 @@ def parse_args():
 
 args = parse_args()
 
-
+# Maybe we should subclass LanguageModelingDataset?
 TEXT = torchtext.data.Field()
-train, val, test = torchtext.datasets.LanguageModelingDataset.splits(
+train, valid, test = torchtext.datasets.LanguageModelingDataset.splits(
     path="data",
     train="train.txt", validation="valid.txt", test="test.txt", text_field=TEXT)
 
-train_iter, val_iter, test_iter = torchtext.data.BPTTIterator.splits(
-    (train, val), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
+TEXT.build_vocab(train)
 
-test_iter = torchtext.data.BPTTIterator.splits(
-    (test), batch_size=args.bsz, device=args.devid, bptt_len=32, repeat=False)
+train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
+    (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
 
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
+
+    def train_epoch(self):
+        raise NotImplementedError("Implement train_epoch")
+
+    def validate(self):
+        raise NotImplementedError("Implement validate")
+
+    def generate_predictions(self):
+        raise NotImplementedError("Implement generate_predictions")
 
 class NnLm(Lm):
     def __init__(self):
