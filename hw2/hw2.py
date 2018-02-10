@@ -17,6 +17,7 @@ import numpy as np
 import random
 from IPython import embed
 
+DEBUG = False
 TOP_K = 20
 random.seed(1111)
 torch.manual_seed(1111)
@@ -74,6 +75,9 @@ TEXT.build_vocab(train)
 train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
     (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
 
+#train_iter_ngram, valid_iter_ngram, test_iter_ngram = torchtext.data.BucketIterator.splits(
+#    (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
+
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
@@ -115,6 +119,7 @@ class Ngram(nn.Module):
     def train_batch(self, batch):
         batch = batch.text.data
         length, batch_size = batch.size()
+        #embed()
         for idx in range(batch_size):
             for p in range(length):
                 self.counts[0][""] += 1
@@ -133,7 +138,7 @@ class Ngram(nn.Module):
 
         # do we want to ignore <eos> in unigram model?
 
-    def calc_prob(self, words):
+    def calc_prob(self, words, debug=False):
         ngrams = ["", words[-1], (words[-2], words[-1]), (words[-3], words[-2], words[-1])]
         # NB: let's just do add-one smoothing for now
         probs = [(1.0 * self.counts[i+1].get(ngrams[i+1], 0) + self.a) / \
@@ -142,6 +147,8 @@ class Ngram(nn.Module):
         word_prob = 0
         for i in range(3):
             word_prob += self.alphas[i] * probs[i]
+        if debug:
+            embed()
         return word_prob
 
     def validate_batch(self, batch):
@@ -150,12 +157,16 @@ class Ngram(nn.Module):
 
         avg_nll = 0
         for idx in range(batch_size):
+
             nll = 0
+            if DEBUG:
+                w = [TEXT.vocab.itos[batch[i,idx]] for i in range(length)]
+                print("now %s" % (" ".join(w)))
+
             for p in range(2, length):
-                words = [TEXT.vocab.stoi[batch[p-2+i,idx]] for i in range(3)]
-                word_prob = self.calc_prob(words)
+                words = [batch[p-2+i,idx] for i in range(3)]
+                word_prob = self.calc_prob(words, bool(p <= 4) and DEBUG)
                 nll += -np.log(word_prob)
-                embed()
             nll /= (length - 2.0)
             avg_nll += nll
 
@@ -166,7 +177,7 @@ class Ngram(nn.Module):
         nll = 0
         for batch in tqdm(data_iter, desc="validate"):
             nll += self.validate_batch(batch)
-        return np.exp2([nll])[0]
+        return np.exp([nll])[0]
 
     def generate(self, prev2word, prev1word):  # last two words; return a list of 20 candidates
         prev2word = TEXT.vocab.stoi[prev2word]
