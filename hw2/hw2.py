@@ -15,11 +15,12 @@ from torchtext.vocab import Vectors, GloVe
 from tqdm import tqdm
 import numpy as np
 import random
+from IPython import embed
 
 TOP_K = 20
 random.seed(1111)
 torch.manual_seed(1111)
-torch.cuda.manual_seed_all(1111)
+#torch.cuda.manual_seed_all(1111)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -65,7 +66,7 @@ args = parse_args()
 # Maybe we should subclass LanguageModelingDataset?
 TEXT = torchtext.data.Field()
 train, valid, test = torchtext.datasets.LanguageModelingDataset.splits(
-    path="data",
+    path="data/",
     train="train.txt", validation="valid.txt", test="test.txt", text_field=TEXT)
 
 TEXT.build_vocab(train)
@@ -106,15 +107,14 @@ class Ngram(nn.Module):
         self.V = len(TEXT.vocab)
         self.counts[0][""] = 0
 
-    def add_dict(self, my_dict, p, idx, delta):
-        ind = 
+    def add_dict(self, my_dict, ind, delta):
         if not ind in my_dict:
             my_dict[ind] = 0
         my_dict[ind] += delta
 
     def train_batch(self, batch):
+        batch = batch.text.data
         length, batch_size = batch.size()
-        batch = batch.data
         for idx in range(batch_size):
             for p in range(length):
                 self.counts[0][""] += 1
@@ -133,7 +133,7 @@ class Ngram(nn.Module):
 
         # do we want to ignore <eos> in unigram model?
 
-    def cacl_prob(self, words):
+    def calc_prob(self, words):
         ngrams = ["", words[-1], (words[-2], words[-1]), (words[-3], words[-2], words[-1])]
         # NB: let's just do add-one smoothing for now
         probs = [(1.0 * self.counts[i+1].get(ngrams[i+1], 0) + self.a) / \
@@ -141,27 +141,32 @@ class Ngram(nn.Module):
                  for i in range(3)]
         word_prob = 0
         for i in range(3):
-            word_prob += self.alphas[i] * self.probs[i]
+            word_prob += self.alphas[i] * probs[i]
         return word_prob
 
     def validate_batch(self, batch):
+        batch = batch.text.data
         length, batch_size = batch.size()
-        batch = batch.data
 
-        nll = 0
+        avg_nll = 0
         for idx in range(batch_size):
+            nll = 0
             for p in range(2, length):
                 words = [TEXT.vocab.stoi[batch[p-2+i,idx]] for i in range(3)]
                 word_prob = self.calc_prob(words)
                 nll += -np.log(word_prob)
-        return nll
+                embed()
+            nll /= (length - 2.0)
+            avg_nll += nll
 
-    """ Calculate perplexity """
+        return avg_nll / batch_size
+
+    """ Calculate average perplexity """
     def validate(self, data_iter):
         nll = 0
         for batch in tqdm(data_iter, desc="validate"):
-            nll += validate_batch(batch)
-        return np.exp(2, nll)
+            nll += self.validate_batch(batch)
+        return np.exp2([nll])[0]
 
     def generate(self, prev2word, prev1word):  # last two words; return a list of 20 candidates
         prev2word = TEXT.vocab.stoi[prev2word]
@@ -170,9 +175,9 @@ class Ngram(nn.Module):
         best_word_ids = np.argsort(word_probs)[::-1][:TOP_K]
         best_words = [TEXT.vocab.itos[word_id] for word_id in best_word_ids]
         return best_words
-        
-    def generate_predictions(self, input_file="../data/input.txt", output_file="output.txt"):
-        f = open(filename)
+
+    def generate_predictions(self, input_file="data/input.txt", output_file="output.txt"):
+        f = open(input_file)
         lines = f.readlines()
         f.close()
 
