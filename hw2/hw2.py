@@ -103,13 +103,26 @@ class LstmLm(Lm):
 class Ngram(nn.Module):
     def __init__(self):
         super(Ngram, self).__init__()
-        self.total_counts = 0
-        self.counts = [{}, {}, {}, {}]
+
+        self.unigram_A = {}
+        self.bigram_A = {}
+        self.trigram_A = {}
+
+        self.unigram_B = 0
+        self.bigram_B = {}
+        self.trigram_B = {}
+
+        # A / B
+        self.unigram_probs = {}
+        self.bigram_probs = {}
+        self.trigram_probs = {}
+
+        # TODO: better implementation - less memory
+
         self.alphas = [0.2, 0.3, 0.5]
         assert np.sum(self.alphas) == 1.0
         self.a = 1 # smoothing factor
         self.V = len(TEXT.vocab)
-        self.counts[0][""] = 0
 
     def add_dict(self, my_dict, ind, delta):
         if not ind in my_dict:
@@ -120,36 +133,82 @@ class Ngram(nn.Module):
         batch = batch.text.data
         length, batch_size = batch.size()
         #embed()
+        
         for idx in range(batch_size):
-            for p in range(length):
-                self.counts[0][""] += 1
+            for p in range(2, length):
+                w1, w2, w3 = batch[p-2, idx], batch[p-1, idx], batch[p, idx]
+
                 # update unigram
-                self.add_dict(self.counts[1], batch[p, idx], 1)
+                if w3 not in self.unigram_A:
+                    self.unigram_A[w3] = 0
+                self.unigram_A[w3] += 1
+                self.unigram_B += 1
+
                 # update bigram
-                if p >= 1:
-                    self.add_dict(self.counts[2], (batch[p-1, idx], batch[p, idx]), 1)
+                if w2 not in self.bigram_A:
+                    self.bigram_A[w2] = {}
+                    self.bigram_B[w2] = 0
+
+                if w3 not in self.bigram_A[w2]:
+                    self.bigram_A[w2][w3] = 0
+
+                self.bigram_A[w2][w3] += 1
+                self.bigram_B[w2] += 1
+
                 # update trigram
-                if p >= 2:
-                    self.add_dict(self.counts[3], (batch[p-2, idx], batch[p-1, idx], batch[p, idx]), 1)
+                if (w1, w2) not in self.trigram_A:
+                    self.trigram_A[(w1, w2)] = {}
+                    self.trigram_B[(w1, w2)] = 0
+                if w3 not in self.trigram_A[(w1, w2)]:
+                    self.trigram_A[(w1, w2)][w3] = 0
+                self.trigram_A[(w1, w2)][w3] += 1
+                self.trigram_B[(w1, w2)] += 1
+        
 
     def train(self, data_iter):
         for batch in tqdm(train_iter):
             self.train_batch(batch)
 
+        """
+        # get unigram probs
+        for w3 in self.unigram_A:
+            self.unigram_probs[w3] = (1.0 * self.unigram_A[w3] + self.a) / (1.0 * self.unigram_B + self.a * self.V)
+        # get bigram probs
+        for w2 in self.bigram_A:
+            for w3 in self.bigram_A[w2]:
+                self.bigram_probs[(w2, w3)] = (1.0 * self.bigram_A[w2][w3] + self.a) / (1.0 * self.bigram_B[w2] + self.a * self.V)
+        # get trigram probs
+        for (w1, w2) in self.trigram_A:
+            for w3 in self.trigram_A[(w1, w2)]:
+                self.trigram_probs[(w1, w2, w3)] = (1.0 * self.trigram_A[(w1,w2)][w3] + self.a) / (1.0 * self.trigram_B[(w1,w2)] + self.a * self.V)
+        """
+        if DEBUG:
+            for w2 in self.bigram_A:
+                for w3 in self.bigram_A[w2]:
+                    def getword(i):
+                        return TEXT.vocab.itos[i]
+                    print("bigramA [%s, %s]: %d" % (getword(w2), getword(w3),  self.bigram_A[w2][w3]))
+            for (w1, w2) in self.trigram_A:
+                for w3 in self.trigram_A[(w1, w2)]:
+                    def getword(i):
+                        return TEXT.vocab.itos[i]
+                    print("trigramA [%s, %s, %s]: %d" % (getword(w1), getword(w2), getword(w3), self.trigram_A[(w1,w2)][w3]))
+            embed()
         # do we want to ignore <eos> in unigram model?
 
     def calc_prob(self, words, debug=False):
-        ngrams = ["", words[-1], (words[-2], words[-1]), (words[-3], words[-2], words[-1])]
-        # NB: let's just do add-one smoothing for now
-        probs = [(1.0 * self.counts[i+1].get(ngrams[i+1], 0) + self.a) / \
-                 (1.0 * self.counts[i].get(ngrams[i], 0) + self.V * self.a) \
-                 for i in range(3)]
-        word_prob = 0
-        for i in range(3):
-            word_prob += self.alphas[i] * probs[i]
+        w1, w2, w3 = words
+
+        word_prob = []
+        word_prob.append(self.alphas[0] * (1.0 * self.unigram_A.get(w3, 0) + self.a) / (self.unigram_B + self.a * self.V))
+        word_prob.append(self.alphas[1] * (1.0 * self.bigram_A.get(w2, {}).get(w3, 0) + self.a) / (1.0 * self.bigram_B.get(w2, 0) + self.a * self.V))
+        word_prob.append(self.alphas[2] * (1.0 * self.trigram_probs.get((w1, w2), {}).get(w3, 0) + self.a) / (1.0 * self.trigram_B.get((w1,w2), 0) + self.a * self.V))
+        return np.sum(word_prob)
+        
         if debug:
             embed()
         return word_prob
+
 
     def validate_batch(self, batch):
         batch = batch.text.data
