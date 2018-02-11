@@ -17,11 +17,15 @@ import numpy as np
 import random
 from IPython import embed
 
+import math
+
 DEBUG = False
 TOP_K = 20
 random.seed(1111)
 torch.manual_seed(1111)
-#torch.cuda.manual_seed_all(1111)
+torch.cuda.manual_seed_all(1111)
+
+torch.backends.cudnn.enabled = False
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -38,7 +42,7 @@ def parse_args():
     parser.add_argument("--optim", choices=["SGD", "Adam"], default="Adam")
 
     parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--lrd", type=float, default=0.9)
+    parser.add_argument("--lrd", type=float, default=0.25)
     parser.add_argument("--wd", type=float, default=1e-4)
 
     parser.add_argument("--bsz", type=int, default=32)
@@ -71,6 +75,7 @@ train, valid, test = torchtext.datasets.LanguageModelingDataset.splits(
     train="train.txt", validation="valid.txt", test="test.txt", text_field=TEXT)
 
 TEXT.build_vocab(train)
+padidx = TEXT.vocab.stoi["<pad>"]
 
 train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
     (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
@@ -82,22 +87,84 @@ class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
 
-    def train_epoch(self):
-        raise NotImplementedError("Implement train_epoch")
+    def train_epoch(self, iter, loss, optimizer, params):
+        self.train()
 
-    def validate(self):
-        raise NotImplementedError("Implement validate")
+        train_loss = 0
+        nwords = 0
+
+        hid = None
+        for batch in tqdm(iter):
+            optimizer.zero_grad()
+            x = batch.text
+            y = batch.target
+            out, hid = model(x, hid if hid is not None else None)
+            bloss = loss(out.view(-1, model.vsize), y.view(-1))
+            bloss.backward()
+            train_loss += bloss
+            nwords += y.ne(padidx).int().sum()
+            clip_grad_norm(params, args.clip)
+
+            optimizer.step()
+
+        return train_loss.data[0], nwords.data[0]
+
+    def validate(self, iter, loss):
+        self.eval()
+
+        valid_loss = 0
+        nwords = 0
+
+        hid = None
+        for batch in iter:
+            x = batch.text
+            y = batch.target
+            out, hid = model(x, hid if hid is not None else None)
+            valid_loss += loss(out.view(-1, model.vsize), y.view(-1))
+            nwords += y.ne(padidx).int().sum()
+        return valid_loss.data[0], nwords.data[0]
 
     def generate_predictions(self):
         raise NotImplementedError("Implement generate_predictions")
 
+
 class NnLm(Lm):
-    def __init__(self):
+    def __init__(self, vocab, nhid, kW=3, nlayers=1, dropout=0, tieweights=True):
         super(NnLm, self).__init__()
+        self.vsize = len(vocab.itos)
+
+        self.lut = nn.Embedding(self.vsize, nhid)
+        self.conv = nn.Conv1d(nhid * kW, nhid)
+        self.proj = nn.Linear(nhid, self.vsize)
+
+    def forward(self, input):
+        emb = self.lut(input)
+        hid = self.conv(emb)
+        return self.proj(hid)
+
 
 class LstmLm(Lm):
-    def __init__(self):
+    def __init__(self, vocab, nhid, nlayers=1, dropout=0, tieweights=True):
         super(LstmLm, self).__init__()
+        self.vsize = len(vocab.itos)
+
+        self.lut = nn.Embedding(self.vsize, nhid)
+        self.rnn = nn.LSTM(
+            input_size=nhid,
+            hidden_size=nhid,
+            num_layers=nlayers,
+            dropout=dropout)
+        self.drop = nn.Dropout(dropout)
+        self.proj = nn.Linear(nhid, self.vsize)
+        if tieweights:
+            self.proj.weight = self.lut.weight
+
+    def forward(self, input, hid):
+        emb = self.lut(input)
+        hids, hid = self.rnn(emb, hid)
+        return self.proj(self.drop(hids)), tuple(map(lambda x: x.detach(), hid))
+
+
 
 # Linear Interpolation on Unigram, Bigram and Trigram
 class Ngram(nn.Module):
@@ -273,6 +340,40 @@ def ngram_model(args):
 if __name__ == "__main__":
     if args.model == "Ngram":
         ngram_model(args)
+    else:
+        models = {model.__name__: model for model in [NnLm, LstmLm]}
+        model = models[args.model](
+            TEXT.vocab, args.nhid, nlayers=args.nlayers, dropout=args.dropout, tieweights=args.tieweights)
+        print(model)
+        if args.devid >= 0:
+            model.cuda(args.devid)
 
+        weight = torch.FloatTensor(model.vsize).fill_(1)
+        weight[padidx] = 0
+        if args.devid >= 0:
+            weight = weight.cuda(args.devid)
+        loss = nn.CrossEntropyLoss(weight=V(weight), size_average=False)
 
+        params = [p for p in model.parameters() if p.requires_grad]
+        if args.optim == "Adam":
+            optimizer = optim.Adam(params, lr = args.lr, weight_decay = args.wd, betas=(args.b1, args.b2))
+        elif args.optim == "SGD":
+            optimizer = optim.SGD(
+                params, lr = args.lr, weight_decay = args.wd,
+                nesterov = not args.nonag, momentum = args.mom, dampening = args.dm)
+        # TODO: hack scheduler to halve every epoch after first reduce.
+        schedule = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, patience=1, factor=args.lrd, threshold=1e-3)
 
+        for epoch in range(args.epochs):
+            print("Epoch {}, lr {}".format(epoch, optimizer.param_groups[0]['lr']))
+            train_loss, train_words = model.train_epoch(
+                iter=train_iter, loss=loss, optimizer=optimizer, params=params)
+            valid_loss, valid_words = model.validate(valid_iter, loss)
+            schedule.step(valid_loss)
+            print("Train: {}, Valid: {}".format(
+                math.exp(train_loss / train_words), math.exp(valid_loss / valid_words)))
+
+        test_loss, test_words = model.validate(test_iter, loss)
+        print("Test: {}".format(math.exp(test_loss / test_words)))
+        model.generate_predictions()

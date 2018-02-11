@@ -83,8 +83,11 @@ print("Converted back to string: ", LABEL.vocab.itos[batch.label.data[0]])
 """
 
 # Build the vocabulary with word embeddings
-url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.simple.vec'
-TEXT.vocab.load_vectors(vectors=Vectors('wiki.simple.vec', url=url))
+#url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.simple.vec'
+#TEXT.vocab.load_vectors(vectors=Vectors('wiki.simple.vec', url=url))
+
+TEXT.vocab.load_vectors(vectors=GloVe(name='6B'))
+
 #simple_vec = TEXT.vocab.vectors.clone()
 
 #url = 'https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.vec'
@@ -474,9 +477,21 @@ def train_model(model, valid_fn, loss=nn.BCEWithLogitsLoss(), epochs=10, lr=1):
                 return bloss
             optimizer.step(closure)
             #clip_param_norm(params, 3)
+            """
+            for param in model.lstm.parameters():
+                if param.dim() >= 2:
+                    norm = param.data.norm()
+                    if norm > 3.:
+                        param.data *= 3. / norm
+            for param in model.proj.parameters():
+                if param.dim() >= 2:
+                    norm = param.data.norm()
+                    if norm > 3.:
+                        param.data *= 3. / norm
+            """
         train_loss /= len(train_iter)
         print("Train loss: " + str(train_loss.data[0]))
-        train_acc = valid_fn(model, valid_iter)
+        train_acc = valid_fn(model, test_iter)
         print("Train acc: " + str(train_acc))
         valid_acc = valid_fn(model, valid_iter)
         print("Valid acc: " + str(valid_acc))
@@ -509,10 +524,10 @@ else:
         model.cuda(args.gpu)
     print(model)
     train_model(model, validate, epochs=args.epochs, lr=args.lr)
-    #_, _, train_acc = validate(model, train_iter)
+    _, _, train_acc = validate(model, train_iter)
     _, _, valid_acc = validate(model, valid_iter)
-    #_, _, test_acc = validate(model, test_iter)
-    #print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
+    _, _, test_acc = validate(model, test_iter)
+    print("train: {}, valid: {}, test: {}".format(train_acc, valid_acc, test_acc))
     #save_model(model, train_acc, valid_acc)
     if args.dooutput:
         output_test(model)
