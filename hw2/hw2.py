@@ -103,7 +103,8 @@ class Lm(nn.Module):
             bloss.backward()
             train_loss += bloss
             nwords += y.ne(padidx).int().sum()
-            clip_grad_norm(params, args.clip)
+            if args.clip > 0:
+                clip_grad_norm(params, args.clip)
 
             optimizer.step()
 
@@ -132,15 +133,31 @@ class NnLm(Lm):
     def __init__(self, vocab, nhid, kW=3, nlayers=1, dropout=0, tieweights=True):
         super(NnLm, self).__init__()
         self.vsize = len(vocab.itos)
+        self.kW = kW
+        self.nhid = nhid
 
         self.lut = nn.Embedding(self.vsize, nhid)
-        self.conv = nn.Conv1d(nhid * kW, nhid)
+        self.conv = nn.Conv1d(nhid, nhid, kW, stride=1)
+        self.drop = nn.Dropout(dropout)
+        m = []
+        for i in range(nlayers-1):
+            m.append(nn.Linear(nhid, nhid))
+            m.append(nn.Tanh())
+            m.append(nn.Dropout(dropout))
+        self.mlp = nn.Sequential(*m)
         self.proj = nn.Linear(nhid, self.vsize)
+        if tieweights:
+            self.proj.weight = self.lut.weight
 
-    def forward(self, input):
+    def forward(self, input, hid):
         emb = self.lut(input)
-        hid = self.conv(emb)
-        return self.proj(hid)
+        T, N, H = emb.size()
+        pad = emb.new(self.kW-1, N, H)
+        pad.data.fill_(0)
+        pad.requires_grad = False
+        emb = torch.cat([pad, emb], 0)
+        hid = self.conv(emb.permute(1,2,0)).permute(2,0,1)
+        return self.proj(self.mlp(hid)), hid
 
 
 class LstmLm(Lm):
