@@ -427,7 +427,7 @@ def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
         # Fill pointer history
         start_idx = len(next_word_history) if next_word_history is not None else 0
         if next_word_history is None:
-            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.pdevid) for t in target])
+            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])
         else:
             next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
         if pointer_history is None:
