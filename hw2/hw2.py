@@ -90,6 +90,14 @@ train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
 #train_iter_ngram, valid_iter_ngram, test_iter_ngram = torchtext.data.BucketIterator.splits(
  #   (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
 
+def filter_eos(words):
+    new_words = []
+    for i in range(len(words)):
+        if words[i] == "<eos>":
+            continue
+        new_words.append(words[i])
+    return words[:20]
+    
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
@@ -511,8 +519,8 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
 
         # TODO(demi): do generation here!
         #embed()
-        scores, idxs = torch.topk(p, 20)
-        outputs.append([[TEXT.vocab.itos[x] for x in idxs.data.tolist()]])
+        scores, idxs = torch.topk(p, 21)
+        outputs.append([filter_eos([TEXT.vocab.itos[x] for x in idxs.data.tolist()])])
 
         next_word_history = next_word_history[-window:]
         pointer_history = pointer_history[-window:]
