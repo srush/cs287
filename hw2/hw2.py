@@ -44,6 +44,11 @@ def parse_args():
     parser.add_argument("--bptt", type=int, default=32)
     parser.add_argument("--clip", type=float, default=5)
 
+    # Cache parameters
+    parser.add_argument('--window', type=int, default=2000)
+    parser.add_argument("--theta", type=float, default=1.0)
+    parser.add_argument("--lambdasm", type=float, default=0.1)
+
     # Adam parameters
     parser.add_argument("--b1", type=float, default=0.9)
     parser.add_argument("--b2", type=float, default=0.999)
@@ -204,6 +209,11 @@ class LstmLm(Lm):
         emb = self.lut(input)
         hids, hid = self.rnn(emb, hid)
         return self.proj(self.drop(hids)), tuple(map(lambda x: x.detach(), hid))
+
+    def forward_all(self, input, hid):
+        emb = self.lut(input)
+        hids, hid = self.rnn(emb, hid)
+        return self.proj(self.drop(hids)), hids, tuple(map(lambda x: x.detach(), hid))
 
 class Ensemble(Lm):
     def __init__(self, nnlm, rnnlm):
@@ -383,6 +393,32 @@ def ngram_model(args):
     model.generate_predictions()
     print("See Generated output in output.txt\n")
 
+def one_hot(idx, size, devid=-1):
+    vec = np.zeros((1, size), dtype=np.float32)
+    vec[0][idx] = 1
+    vec_var = Variable(torch.from_numpy(vec))
+    if devid >= 0:
+        vec_var = vec_var.cuda()
+    return vec_var
+
+# used salesforce's code as a reference
+def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
+    model.eval()
+
+    total_loss = 0
+    vsize = len(TEXT.vocab)
+    hid = None  # TODO: init hidden?
+
+    next_word_history = None
+    pointer_history = None
+    for batch in tqdm(data_iter, desc="evaluate cache"):
+        data = batch.text
+        target = batch.target
+        # Given batch size = 1, data/target's shape: (bptt, 1)
+        embed()
+        output, rnn_outs, hidden = model.forward_all(data, hid)
+        embed()
+
 if __name__ == "__main__":
     if args.model == "Ngram":
         ngram_model(args)
@@ -407,8 +443,11 @@ if __name__ == "__main__":
         model = torch.load("LstmLm.pth")
         if args.devid >= 0:
             model.cuda(args.devid)
-        # TODO: check if valid is consecutive
-        embed()
+        # TODO(demi): check if valid is consecutive
+        avg_valid_loss = evaluate_cache(model, valid_iter, 1)
+        avg_test_loss = evaluate_cache(model, test_iter, 1)
+
+        # TODO(demi): generation??
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
