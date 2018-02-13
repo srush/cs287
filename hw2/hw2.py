@@ -10,7 +10,6 @@ from torch.nn import Parameter
 from torch.nn.utils import clip_grad_norm
 
 import torchtext
-from torchtext.vocab import Vectors, GloVe
 
 from tqdm import tqdm
 import numpy as np
@@ -21,12 +20,6 @@ import math
 
 DEBUG = False
 TOP_K = 20
-random.seed(1111)
-torch.manual_seed(1111)
-torch.cuda.manual_seed_all(1111)
-
-torch.backends.cudnn.enabled = False
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--devid", type=int, default=-1)
@@ -67,6 +60,13 @@ def parse_args():
     return parser.parse_args()
 
 args = parse_args()
+
+random.seed(1111)
+torch.manual_seed(1111)
+if args.devid >= 0:
+    torch.cuda.manual_seed_all(1111)
+    torch.backends.cudnn.enabled = False
+
 
 # Maybe we should subclass LanguageModelingDataset?
 TEXT = torchtext.data.Field()
@@ -123,10 +123,29 @@ class Lm(nn.Module):
             out, hid = model(x, hid if hid is not None else None)
             valid_loss += loss(out.view(-1, model.vsize), y.view(-1))
             nwords += y.ne(padidx).int().sum()
+            #nwords += y.nelement()
         return valid_loss.data[0], nwords.data[0]
 
     def generate_predictions(self):
-        raise NotImplementedError("Implement generate_predictions")
+        data = torchtext.datasets.LanguageModelingDataset(
+            path="data/input.txt",
+            text_field=TEXT)
+        data_iter = torchtext.data.BPTTIterator(data, 211, 12, device=args.devid, train=False)
+        # Well, if I do a bsz of 211 and join the prediction together later,
+        # should be fine, but whatever.
+        outputs = [[] for _ in range(211)]
+        print()
+        print("Generating Kaggle predictions")
+        for batch in tqdm(data_iter):
+            # T x N x V
+            scores, idxs = self(batch.text, None)[0][-3].topk(20, dim=-1)
+            for i in range(idxs.size(0)):
+                outputs[i].append([TEXT.vocab.itos[x] for x in idxs[i].tolist()])
+        with open(self.__class__.__name__ + ".preds.txt", "w") as f:
+            f.write("id,word\n")
+            for sentences in outputs:
+                f.write("\n".join(["{},{}".format(i, " ".join(x)) for i, x in enumerate(sentences)]))
+            f.write("\n")
 
 
 class NnLm(Lm):
