@@ -427,7 +427,7 @@ def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
         # Fill pointer history
         start_idx = len(next_word_history) if next_word_history is not None else 0
         if next_word_history is None:
-            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])
+            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.pdevid) for t in target])
         else:
             next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
         if pointer_history is None:
@@ -486,9 +486,9 @@ if __name__ == "__main__":
         avg_valid_loss = evaluate_cache(model, valid_iter, 1)
         avg_test_loss = evaluate_cache(model, test_iter, 1)
         print("avg_valid_loss", avg_valid_loss)
-        print("avg_valid_perp", torch.exp(avg_valid_loss))
+        print("avg_valid_perp", math.exp(avg_valid_loss))
         print("avg_test_loss", avg_test_loss)
-        print("avg_test_perp", torch.exp(avg_test_loss))
+        print("avg_test_perp", math.exp(avg_test_loss))
         
 
         # TODO(demi): generation??
