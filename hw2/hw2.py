@@ -458,6 +458,63 @@ def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
         pointer_history = pointer_history[-window:]
     return total_loss / total_len
 
+def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", output_file="cache.out"):
+    # let's assume we can still apply caching on input.txt (consecutive)
+    data = torchtext.datasets.LanguageModelingDataset(
+        path=input_file,
+        text_field=TEXT)
+    data_iter = torchtext.data.BPTTIterator(data, batch_size, 12, device=args.devid, train=False)
+    
+    next_word_history = None
+    pointer_history = None
+    vsize = len(TEXT.vocab)
+    hid = None  # TODO: init hidden?
+
+    for batch in tqdm(data_iter, desc="generate cache"):
+        embed()
+        data = batch.text
+        target = batch.target
+
+        output, rnn_outs, hidden = model.forward_all(data, hid)
+        # output: (bptt, batch_size=1, vsize)
+        # rnn_outs: (bptt, batch_size=1, hidden_dim)
+        output_flat = output.squeeze(1)
+        rnn_out = rnn_outs.squeeze(1)
+
+
+        # Fill pointer history
+        start_idx = len(next_word_history) if next_word_history is not None else 0
+        if next_word_history is None:
+            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])
+        else:
+            next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
+        if pointer_history is None:
+            pointer_history = V(rnn_out.data)
+        else:
+            pointer_history = torch.cat([pointer_history, V(rnn_out.data)], dim=0)
+
+        # Pointer manual cross entropy
+        loss = 0
+        softmax_output_flat = torch.nn.functional.softmax(output_flat, dim=1)
+        # softmax_output_flat: (bptt, vsize)
+        for idx, vocab_loss in enumerate(softmax_output_flat):
+            p = vocab_loss
+            # NB(demi): during generation, we significantly reduced the window size - is it fine?
+            if start_idx + idx > window:
+                valid_next_word = next_word_history[start_idx + idx - window:start_idx + idx]
+                valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
+                logits = torch.mv(valid_pointer_history, rnn_out[idx])
+                theta = args.theta
+                ptr_attn = torch.nn.functional.softmax(theta * logits, dim=0).view(-1, 1)
+                ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
+                lambdah = args.lambdasm
+                p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
+            # TODO(demi): do generation here!
+            
+
+        next_word_history = next_word_history[-window:]
+        pointer_history = pointer_history[-window:]
+
 if __name__ == "__main__":
     if args.model == "Ngram":
         ngram_model(args)
@@ -482,7 +539,6 @@ if __name__ == "__main__":
         model = torch.load("LstmLm.pth")
         if args.devid >= 0:
             model.cuda(args.devid)
-        # TODO(demi): check if valid is consecutive
         avg_valid_loss = evaluate_cache(model, valid_iter, 1)
         avg_test_loss = evaluate_cache(model, test_iter, 1)
         print("avg_valid_loss", avg_valid_loss)
@@ -490,7 +546,7 @@ if __name__ == "__main__":
         print("avg_test_loss", avg_test_loss)
         print("avg_test_perp", math.exp(avg_test_loss))
     
-        # TODO(demi): generation??
+        generate_cache(model)
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
