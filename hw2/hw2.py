@@ -401,7 +401,7 @@ def one_hot(idx, size, devid=-1):
         vec_var = vec_var.cuda()
     return vec_var
 
-# used salesforce's code as a reference
+# Acknowledgement: used salesforce's code as a reference
 def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
     model.eval()
 
@@ -489,8 +489,7 @@ if __name__ == "__main__":
         print("avg_valid_perp", math.exp(avg_valid_loss))
         print("avg_test_loss", avg_test_loss)
         print("avg_test_perp", math.exp(avg_test_loss))
-        
-
+    
         # TODO(demi): generation??
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}

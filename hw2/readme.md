@@ -54,7 +54,7 @@ Train: 71.58999479091389, Valid: 158.07431086368382, Test: 146.13046578572258
 python hw2.py  --model NnLm --devid 3 --lr 0.001 --clip 0 --optim Adam --nlayers 2 --nhid 512 --dropout 0.5 --epochs 20 --bsz 64 --bptt 64
 ```
 
-## NNLM w/ adam, no weight tying, dropout, maxnorm embedding
+## NNLM w/ adam, no weight tying, dropout, maxnorm embedding d d
 
 Train: 63.69241726931047, Valid: 165.18956092843882, Test: 152.0618240821467
 ```
@@ -68,11 +68,16 @@ Test: 79.61830767766449
 
 ## Linear Interpolation of NGrams (smoothing on unigram, bigram and trigram)
 (weights: 0.7, 0.2, 0.1)
-python3 hw2.py --model=Ngram --bptt=1000000
+python hw2.py --model=Ngram --bptt=1000000
 Train: 540.660, Valid: 565.158
 
 ## Linear Interpolation of NGrams (smoothing on unigram only)
 (weights: 0.7, 0.2, 0.1)
-python3 hw2.py --model=Ngram --bptt=1000000
+python hw2.py --model=Ngram --bptt=1000000
 Train: 37.602, Valid: 241.977
+
+## LSTM w/ Cache Model
+(2000, 0.1, 1.0)
+python hw2.py --model=Cache --bptt 5000 --devid 0
+Valid: 71.03, Test: 69.23
 
