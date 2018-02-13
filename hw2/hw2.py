@@ -401,7 +401,6 @@ def one_hot(idx, size, devid=-1):
         vec_var = vec_var.cuda()
     return vec_var
 
-# Acknowledgement: used salesforce's code as a reference
 def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
     model.eval()
 
@@ -469,19 +468,19 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
     pointer_history = None
     vsize = len(TEXT.vocab)
     hid = None  # TODO: init hidden?
-
+    outputs = []
     for batch in tqdm(data_iter, desc="generate cache"):
         embed()
-        data = batch.text
-        target = batch.target
+        data = batch.text[:10]
+        target = data[1:]
 
         output, rnn_outs, hidden = model.forward_all(data, hid)
         # output: (bptt, batch_size=1, vsize)
         # rnn_outs: (bptt, batch_size=1, hidden_dim)
         output_flat = output.squeeze(1)
-        rnn_out = rnn_outs.squeeze(1)
+        rnn_out = rnn_outs.squeeze(1)[:-1]
 
-
+        embed()
         # Fill pointer history
         start_idx = len(next_word_history) if next_word_history is not None else 0
         if next_word_history is None:
@@ -496,24 +495,35 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
         # Pointer manual cross entropy
         loss = 0
         softmax_output_flat = torch.nn.functional.softmax(output_flat, dim=1)
-        # softmax_output_flat: (bptt, vsize)
-        for idx, vocab_loss in enumerate(softmax_output_flat):
-            p = vocab_loss
-            # NB(demi): during generation, we significantly reduced the window size - is it fine?
-            if start_idx + idx > window:
-                valid_next_word = next_word_history[start_idx + idx - window:start_idx + idx]
-                valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
-                logits = torch.mv(valid_pointer_history, rnn_out[idx])
-                theta = args.theta
-                ptr_attn = torch.nn.functional.softmax(theta * logits, dim=0).view(-1, 1)
-                ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
-                lambdah = args.lambdasm
-                p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
-            # TODO(demi): do generation here!
-            
+
+        idx = softmax_output_flat.size(0) - 1
+        vocab_loss = softmax_output_flat[idx]
+        p = vocab_loss
+        if start_idx + idx > window:
+            valid_next_word = next_word_history[start_idx + idx - window:start_idx + idx]
+            valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
+            logits = torch.mv(valid_pointer_history, rnn_out[idx])
+            theta = args.theta
+            ptr_attn = torch.nn.functional.softmax(theta * logits, dim=0).view(-1, 1)
+            ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
+            lambdah = args.lambdasm
+            p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
+
+        # TODO(demi): do generation here!
+        embed()
+        scores, idxs = torch.topk(p, 20)
+        oututs.append([TEXT.vocab.itos[x] for x in idxs.tolist()])
 
         next_word_history = next_word_history[-window:]
         pointer_history = pointer_history[-window:]
+
+    with open(output_file, "w") as f:
+        f.write("id,word\n")
+        ok = 1
+        for sentences in outputs:
+            f.write("\n".join(["{},{}".format(ok+i, " ".join(x)) for i, x in enumerate(sentences)]))
+            f.write("\n")
+            ok += len(sentences)
 
 if __name__ == "__main__":
     if args.model == "Ngram":
@@ -539,6 +549,9 @@ if __name__ == "__main__":
         model = torch.load("LstmLm.pth")
         if args.devid >= 0:
             model.cuda(args.devid)
+
+        generate_cache(model)
+
         avg_valid_loss = evaluate_cache(model, valid_iter, 1)
         avg_test_loss = evaluate_cache(model, test_iter, 1)
         print("avg_valid_loss", avg_valid_loss)
@@ -546,7 +559,6 @@ if __name__ == "__main__":
         print("avg_test_loss", avg_test_loss)
         print("avg_test_perp", math.exp(avg_test_loss))
     
-        generate_cache(model)
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
