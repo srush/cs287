@@ -512,7 +512,7 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
         # TODO(demi): do generation here!
         embed()
         scores, idxs = torch.topk(p, 20)
-        outputs.append([TEXT.vocab.itos[x] for x in idxs.tolist()])
+        outputs.append([TEXT.vocab.itos[x] for x in idxs.data.tolist()])
 
         next_word_history = next_word_history[-window:]
         pointer_history = pointer_history[-window:]
