@@ -26,6 +26,13 @@ Train: 43.79502974945982, Valid: 76.17829400790994, Test: 73.27243286840336
 python hw2.py  --model LstmLm --devid 3 --lr 0.01 --clip 2 --optim Adam --nlayers 2 --nhid 512 --dropout 0.5 --epochs 30 --bsz 128 --bptt 32 --tieweights
 ```
 
+## LSTM w/ adam, weight tying, train longer
+
+Train: 42.90723478099889, Valid: 75.74921810452948, Test: 72.84913233987702
+```
+python hw2.py  --model LstmLm --devid 1 --lr 0.01 --clip 2 --optim Adam --nlayers 2 --nhid 512 --dropout 0.5 --epochs 50 --bsz 128 --bptt 32 --tieweights
+```
+
 ## NNLM w/ adam, weight tying
 
 Train: 66.99094327467738, Valid: 227.08821469306596, Test: 208.32806255668248
@@ -46,3 +53,15 @@ Train: 71.58999479091389, Valid: 158.07431086368382, Test: 146.13046578572258
 ```
 python hw2.py  --model NnLm --devid 3 --lr 0.001 --clip 0 --optim Adam --nlayers 2 --nhid 512 --dropout 0.5 --epochs 20 --bsz 64 --bptt 64
 ```
+
+## NNLM w/ adam, no weight tying, dropout, maxnorm embedding
+
+Train: 63.69241726931047, Valid: 165.18956092843882, Test: 152.0618240821467
+```
+python hw2.py  --model NnLm --devid 0 --lr 0.001 --clip 0 --optim Adam --nlayers 2 --nhid 512 --dropout 0.5 --epochs 20 --bsz 64 --bptt 64 --maxnorm 3
+```
+
+## Ensemble of best NNLM with best RNNLM
+(Softmax(nnlm) + Softmax(rnnlm))/2. adding the logits (multiplicative) did not work and gave test ppl > 500.
+
+Test: 79.61830767766449

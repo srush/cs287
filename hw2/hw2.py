@@ -24,11 +24,13 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--devid", type=int, default=-1)
 
-    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm"], default="LstmLm")
+    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm", "Ensemble"], default="LstmLm")
     parser.add_argument("--nhid", type=int, default=256)
     parser.add_argument("--nlayers", type=int, default=1)
 
     parser.add_argument("--tieweights", action="store_true")
+    parser.add_argument("--maxnorm", type=float, default=None)
+    parser.add_argument("--dropout", type=float, default=0)
 
     parser.add_argument("--epochs", type=int, default=10)
 
@@ -40,7 +42,6 @@ def parse_args():
 
     parser.add_argument("--bsz", type=int, default=32)
     parser.add_argument("--bptt", type=int, default=32)
-    parser.add_argument("--dropout", type=float, default=0)
     parser.add_argument("--clip", type=float, default=5)
 
     # Adam parameters
@@ -66,6 +67,7 @@ torch.manual_seed(1111)
 if args.devid >= 0:
     torch.cuda.manual_seed_all(1111)
     torch.backends.cudnn.enabled = False
+    print("Cuddn is enabled: {}".format(torch.backends.cudnn.enabled))
 
 
 # Maybe we should subclass LanguageModelingDataset?
@@ -127,6 +129,7 @@ class Lm(nn.Module):
         return valid_loss.data[0], nwords.data[0]
 
     def generate_predictions(self):
+        self.eval()
         data = torchtext.datasets.LanguageModelingDataset(
             path="data/input.txt",
             text_field=TEXT)
@@ -143,9 +146,11 @@ class Lm(nn.Module):
                 outputs[i].append([TEXT.vocab.itos[x] for x in idxs[i].tolist()])
         with open(self.__class__.__name__ + ".preds.txt", "w") as f:
             f.write("id,word\n")
+            ok = 1
             for sentences in outputs:
-                f.write("\n".join(["{},{}".format(i, " ".join(x)) for i, x in enumerate(sentences)]))
-            f.write("\n")
+                f.write("\n".join(["{},{}".format(ok+i, " ".join(x)) for i, x in enumerate(sentences)]))
+                f.write("\n")
+                ok += len(sentences)
 
 
 class NnLm(Lm):
@@ -155,7 +160,7 @@ class NnLm(Lm):
         self.kW = kW
         self.nhid = nhid
 
-        self.lut = nn.Embedding(self.vsize, nhid)
+        self.lut = nn.Embedding(self.vsize, nhid, max_norm=args.maxnorm)
         self.conv = nn.Conv1d(nhid, nhid, kW, stride=1)
         self.drop = nn.Dropout(dropout)
         m = []
@@ -184,7 +189,7 @@ class LstmLm(Lm):
         super(LstmLm, self).__init__()
         self.vsize = len(vocab.itos)
 
-        self.lut = nn.Embedding(self.vsize, nhid)
+        self.lut = nn.Embedding(self.vsize, nhid, max_norm=args.maxnorm)
         self.rnn = nn.LSTM(
             input_size=nhid,
             hidden_size=nhid,
@@ -200,6 +205,17 @@ class LstmLm(Lm):
         hids, hid = self.rnn(emb, hid)
         return self.proj(self.drop(hids)), tuple(map(lambda x: x.detach(), hid))
 
+class Ensemble(Lm):
+    def __init__(self, nnlm, rnnlm):
+        super(Ensemble, self).__init__()
+        self.nnlm = nnlm
+        self.rnnlm = rnnlm
+        self.vsize = nnlm.vsize
+
+    def forward(self, input, hid):
+        nnlmout, _ = self.nnlm(input, None)
+        rnnlmout, hid = self.rnnlm(input, hid)
+        return ((F.softmax(nnlmout, dim=-1) + F.softmax(rnnlmout, dim=-1)) / 2).log(), hid
 
 
 # Linear Interpolation on Unigram, Bigram and Trigram
@@ -376,6 +392,22 @@ def ngram_model(args):
 if __name__ == "__main__":
     if args.model == "Ngram":
         ngram_model(args)
+    elif args.model == "Ensemble":
+        nnlm = torch.load("NnLm.pth")
+        rnnlm = torch.load("LstmLm.pth")
+        model = Ensemble(nnlm, rnnlm)
+        if args.devid >= 0:
+            model.cuda(args.devid)
+
+        weight = torch.FloatTensor(model.vsize).fill_(1)
+        weight[padidx] = 0
+        if args.devid >= 0:
+            weight = weight.cuda(args.devid)
+        loss = nn.CrossEntropyLoss(weight=V(weight), size_average=False)
+        test_loss, test_words = model.validate(test_iter, loss)
+        print("Test: {}".format(math.exp(test_loss / test_words)))
+
+        model.generate_predictions()
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
@@ -413,3 +445,4 @@ if __name__ == "__main__":
         test_loss, test_words = model.validate(test_iter, loss)
         print("Test: {}".format(math.exp(test_loss / test_words)))
         model.generate_predictions()
+        torch.save(model.cpu(), model.__class__.__name__ + ".pth")
