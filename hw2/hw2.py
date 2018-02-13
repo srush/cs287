@@ -257,7 +257,7 @@ class Ngram(nn.Module):
     def train_batch(self, batch):
         batch = batch.text.data
         length, batch_size = batch.size()
-        embed()
+        #embed()
         
         for idx in range(batch_size):
             for p in range(2, length):
@@ -306,7 +306,7 @@ class Ngram(nn.Module):
                     def getword(i):
                         return TEXT.vocab.itos[i]
                     print("trigramA [%s, %s, %s]: %d" % (getword(w1), getword(w2), getword(w3), self.trigram_A[(w1,w2)][w3]))
-            embed()
+            #embed()
         # do we want to ignore <eos> in unigram model?
 
     def calc_prob(self, words, debug=False):
@@ -510,7 +510,7 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
             p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
 
         # TODO(demi): do generation here!
-        embed()
+        #embed()
         scores, idxs = torch.topk(p, 20)
         outputs.append([[TEXT.vocab.itos[x] for x in idxs.data.tolist()]])
 
