@@ -478,7 +478,7 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
         # output: (bptt, batch_size=1, vsize)
         # rnn_outs: (bptt, batch_size=1, hidden_dim)
         output_flat = output.squeeze(1)
-        rnn_out = rnn_outs.squeeze(1)[:-1]
+        rnn_out = rnn_outs.squeeze(1)
 
         #embed()
         # Fill pointer history
@@ -488,9 +488,9 @@ def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", 
         else:
             next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
         if pointer_history is None:
-            pointer_history = V(rnn_out.data)
+            pointer_history = V(rnn_out.data[:-1])
         else:
-            pointer_history = torch.cat([pointer_history, V(rnn_out.data)], dim=0)
+            pointer_history = torch.cat([pointer_history, V(rnn_out.data[:-1])], dim=0)
 
         # Pointer manual cross entropy
         loss = 0
