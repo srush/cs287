@@ -24,7 +24,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--devid", type=int, default=-1)
 
-    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm", "Ensemble"], default="LstmLm")
+    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm", "Ensemble", "Cache"], default="LstmLm")
     parser.add_argument("--nhid", type=int, default=256)
     parser.add_argument("--nlayers", type=int, default=1)
 
@@ -80,7 +80,7 @@ TEXT.build_vocab(train)
 padidx = TEXT.vocab.stoi["<pad>"]
 
 train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
-    (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
+    (train, valid, test), batch_size=(args.bsz if args.model != "Cache" else 1), device=args.devid, bptt_len=args.bptt, repeat=False)
 
 #train_iter_ngram, valid_iter_ngram, test_iter_ngram = torchtext.data.BucketIterator.splits(
  #   (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
@@ -402,6 +402,13 @@ if __name__ == "__main__":
         print("Test: {}".format(math.exp(test_loss / test_words)))
 
         model.generate_predictions()
+
+    elif args.model == "Cache":
+        model = torch.load("LstmLm.pth")
+        if args.devid >= 0:
+            model.cuda(args.devid)
+        # TODO: check if valid is consecutive
+        embed()
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
