@@ -96,8 +96,8 @@ def filter_eos(words):
         if words[i] == "<eos>":
             continue
         new_words.append(words[i])
-    return words[:20]
-
+    return new_words[:20]
+    
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
