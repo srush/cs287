@@ -83,7 +83,7 @@ train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
     (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
 
 #train_iter_ngram, valid_iter_ngram, test_iter_ngram = torchtext.data.BucketIterator.splits(
-#    (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
+ #   (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
 
 class Lm(nn.Module):
     def __init__(self):
@@ -238,20 +238,16 @@ class Ngram(nn.Module):
 
         # TODO: better implementation - less memory
 
-        self.alphas = [0.2, 0.3, 0.5]
-        assert np.sum(self.alphas) == 1.0
+        self.alphas = [0.7, 0.2, 0.1]
+        #assert np.sum(self.alphas) == 1.0, np.sum(self.alphas) 
         self.a = 1 # smoothing factor
         self.V = len(TEXT.vocab)
 
-    def add_dict(self, my_dict, ind, delta):
-        if not ind in my_dict:
-            my_dict[ind] = 0
-        my_dict[ind] += delta
 
     def train_batch(self, batch):
         batch = batch.text.data
         length, batch_size = batch.size()
-        #embed()
+        embed()
         
         for idx in range(batch_size):
             for p in range(2, length):
@@ -288,19 +284,7 @@ class Ngram(nn.Module):
         for batch in tqdm(train_iter):
             self.train_batch(batch)
 
-        """
-        # get unigram probs
-        for w3 in self.unigram_A:
-            self.unigram_probs[w3] = (1.0 * self.unigram_A[w3] + self.a) / (1.0 * self.unigram_B + self.a * self.V)
-        # get bigram probs
-        for w2 in self.bigram_A:
-            for w3 in self.bigram_A[w2]:
-                self.bigram_probs[(w2, w3)] = (1.0 * self.bigram_A[w2][w3] + self.a) / (1.0 * self.bigram_B[w2] + self.a * self.V)
-        # get trigram probs
-        for (w1, w2) in self.trigram_A:
-            for w3 in self.trigram_A[(w1, w2)]:
-                self.trigram_probs[(w1, w2, w3)] = (1.0 * self.trigram_A[(w1,w2)][w3] + self.a) / (1.0 * self.trigram_B[(w1,w2)] + self.a * self.V)
-        """
+        
         if DEBUG:
             for w2 in self.bigram_A:
                 for w3 in self.bigram_A[w2]:
@@ -320,8 +304,18 @@ class Ngram(nn.Module):
 
         word_prob = []
         word_prob.append(self.alphas[0] * (1.0 * self.unigram_A.get(w3, 0) + self.a) / (self.unigram_B + self.a * self.V))
-        word_prob.append(self.alphas[1] * (1.0 * self.bigram_A.get(w2, {}).get(w3, 0) + self.a) / (1.0 * self.bigram_B.get(w2, 0) + self.a * self.V))
-        word_prob.append(self.alphas[2] * (1.0 * self.trigram_probs.get((w1, w2), {}).get(w3, 0) + self.a) / (1.0 * self.trigram_B.get((w1,w2), 0) + self.a * self.V))
+        
+        if self.bigram_B.get(w2, 0) > 0:
+            word_prob.append(self.alphas[1] * self.bigram_A.get(w2, {}).get(w3, 0) / self.bigram_B.get(w2, 0))
+        else:
+            word_prob.append(0.0)
+        if self.trigram_B.get((w1, w2), 0) > 0:
+            word_prob.append(self.alphas[2] * self.trigram_A.get((w1,w2), {}).get(w3, 0) / self.trigram_B.get((w1,w2),0))
+        else:
+            word_prob.append(0.0)
+        
+        #word_prob.append(self.alphas[1] * (1.0 * self.bigram_A.get(w2, {}).get(w3, 0) + self.a) / (1.0 * self.bigram_B.get(w2, 0) + self.a * self.V))
+        #word_prob.append(self.alphas[2] * (1.0 * self.trigram_probs.get((w1, w2), {}).get(w3, 0) + self.a) / (1.0 * self.trigram_B.get((w1,w2), 0) + self.a * self.V))
         return np.sum(word_prob)
         
         if debug:

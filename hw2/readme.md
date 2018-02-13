@@ -65,3 +65,14 @@ python hw2.py  --model NnLm --devid 0 --lr 0.001 --clip 0 --optim Adam --nlayers
 (Softmax(nnlm) + Softmax(rnnlm))/2. adding the logits (multiplicative) did not work and gave test ppl > 500.
 
 Test: 79.61830767766449
+
+## Linear Interpolation of NGrams (smoothing on unigram, bigram and trigram)
+(weights: 0.7, 0.2, 0.1)
+python3 hw2.py --model=Ngram --bptt=1000000
+Train: 540.660, Valid: 565.158
+
+## Linear Interpolation of NGrams (smoothing on unigram only)
+(weights: 0.7, 0.2, 0.1)
+python3 hw2.py --model=Ngram --bptt=1000000
+Train: 37.602, Valid: 241.977
+
