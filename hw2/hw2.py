@@ -97,7 +97,7 @@ def filter_eos(words):
             continue
         new_words.append(words[i])
     return words[:20]
-    
+
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
@@ -154,9 +154,9 @@ class Lm(nn.Module):
         print("Generating Kaggle predictions")
         for batch in tqdm(data_iter):
             # T x N x V
-            scores, idxs = self(batch.text, None)[0][-3].topk(20, dim=-1)
+            scores, idxs = self(batch.text, None)[0][-3].topk(21, dim=-1)
             for i in range(idxs.size(0)):
-                outputs[i].append([TEXT.vocab.itos[x] for x in idxs[i].tolist()])
+                outputs[i].append(filter_eos([TEXT.vocab.itos[x] for x in idxs[i].data.tolist()]))
         with open(self.__class__.__name__ + ".preds.txt", "w") as f:
             f.write("id,word\n")
             ok = 1
