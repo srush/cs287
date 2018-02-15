@@ -105,6 +105,7 @@ class Lm(nn.Module):
             bloss = loss(out.view(-1, model.vsize), y.view(-1))
             bloss.backward()
             train_loss += bloss
+            # bytetensor.sum overflows, so cast to int
             nwords += y.ne(padidx).int().sum()
             if args.clip > 0:
                 clip_grad_norm(self.parameters(), args.clip)
@@ -226,6 +227,8 @@ if __name__ == "__main__":
     if args.devid >= 0:
         model.cuda(args.devid)
 
+    # We do not want to give the model credit for predicting padding symbols,
+    # this can decrease ppl a few points.
     weight = torch.FloatTensor(model.vsize).fill_(1)
     weight[padidx] = 0
     if args.devid >= 0:
@@ -234,7 +237,8 @@ if __name__ == "__main__":
 
     params = [p for p in model.parameters() if p.requires_grad]
     if args.optim == "Adam":
-        optimizer = optim.Adam(params, lr = args.lr, weight_decay = args.wd, betas=(args.b1, args.b2))
+        optimizer = optim.Adam(
+            params, lr = args.lr, weight_decay = args.wd, betas=(args.b1, args.b2))
     elif args.optim == "SGD":
         optimizer = optim.SGD(
             params, lr = args.lr, weight_decay = args.wd,
