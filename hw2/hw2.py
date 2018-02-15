@@ -66,7 +66,7 @@ random.seed(1111)
 torch.manual_seed(1111)
 if args.devid >= 0:
     torch.cuda.manual_seed_all(1111)
-    torch.backends.cudnn.enabled = False
+    #torch.backends.cudnn.enabled = False
     print("Cuddn is enabled: {}".format(torch.backends.cudnn.enabled))
 
 
