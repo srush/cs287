@@ -24,7 +24,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--devid", type=int, default=-1)
 
-    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm", "Ensemble"], default="LstmLm")
+    parser.add_argument("--model", choices=["Ngram", "NnLm", "LstmLm", "Ensemble", "Cache"], default="LstmLm")
     parser.add_argument("--nhid", type=int, default=256)
     parser.add_argument("--nlayers", type=int, default=1)
 
@@ -43,6 +43,11 @@ def parse_args():
     parser.add_argument("--bsz", type=int, default=32)
     parser.add_argument("--bptt", type=int, default=32)
     parser.add_argument("--clip", type=float, default=5)
+
+    # Cache parameters
+    parser.add_argument('--window', type=int, default=2000)
+    parser.add_argument("--theta", type=float, default=1.0)
+    parser.add_argument("--lambdasm", type=float, default=0.1)
 
     # Adam parameters
     parser.add_argument("--b1", type=float, default=0.9)
@@ -80,11 +85,19 @@ TEXT.build_vocab(train)
 padidx = TEXT.vocab.stoi["<pad>"]
 
 train_iter, valid_iter, test_iter = torchtext.data.BPTTIterator.splits(
-    (train, valid, test), batch_size=args.bsz, device=args.devid, bptt_len=args.bptt, repeat=False)
+    (train, valid, test), batch_size=(args.bsz if args.model != "Cache" else 1), device=args.devid, bptt_len=args.bptt, repeat=False)
 
 #train_iter_ngram, valid_iter_ngram, test_iter_ngram = torchtext.data.BucketIterator.splits(
-#    (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
+ #   (train, valid, test), batch_size=args.bsz, device=args.devid, repeat=False)
 
+def filter_eos(words):
+    new_words = []
+    for i in range(len(words)):
+        if words[i] == "<eos>":
+            continue
+        new_words.append(words[i])
+    return new_words[:20]
+    
 class Lm(nn.Module):
     def __init__(self):
         super(Lm, self).__init__()
@@ -141,9 +154,9 @@ class Lm(nn.Module):
         print("Generating Kaggle predictions")
         for batch in tqdm(data_iter):
             # T x N x V
-            scores, idxs = self(batch.text, None)[0][-3].topk(20, dim=-1)
+            scores, idxs = self(batch.text, None)[0][-3].topk(21, dim=-1)
             for i in range(idxs.size(0)):
-                outputs[i].append([TEXT.vocab.itos[x] for x in idxs[i].tolist()])
+                outputs[i].append(filter_eos([TEXT.vocab.itos[x] for x in idxs[i].data.tolist()]))
         with open(self.__class__.__name__ + ".preds.txt", "w") as f:
             f.write("id,word\n")
             ok = 1
@@ -205,6 +218,11 @@ class LstmLm(Lm):
         hids, hid = self.rnn(emb, hid)
         return self.proj(self.drop(hids)), tuple(map(lambda x: x.detach(), hid))
 
+    def forward_all(self, input, hid):
+        emb = self.lut(input)
+        hids, hid = self.rnn(emb, hid)
+        return self.proj(self.drop(hids)), hids, tuple(map(lambda x: x.detach(), hid))
+
 class Ensemble(Lm):
     def __init__(self, nnlm, rnnlm):
         super(Ensemble, self).__init__()
@@ -238,15 +256,11 @@ class Ngram(nn.Module):
 
         # TODO: better implementation - less memory
 
-        self.alphas = [0.2, 0.3, 0.5]
-        assert np.sum(self.alphas) == 1.0
+        self.alphas = [0.7, 0.2, 0.1]
+        #assert np.sum(self.alphas) == 1.0, np.sum(self.alphas) 
         self.a = 1 # smoothing factor
         self.V = len(TEXT.vocab)
 
-    def add_dict(self, my_dict, ind, delta):
-        if not ind in my_dict:
-            my_dict[ind] = 0
-        my_dict[ind] += delta
 
     def train_batch(self, batch):
         batch = batch.text.data
@@ -288,19 +302,7 @@ class Ngram(nn.Module):
         for batch in tqdm(train_iter):
             self.train_batch(batch)
 
-        """
-        # get unigram probs
-        for w3 in self.unigram_A:
-            self.unigram_probs[w3] = (1.0 * self.unigram_A[w3] + self.a) / (1.0 * self.unigram_B + self.a * self.V)
-        # get bigram probs
-        for w2 in self.bigram_A:
-            for w3 in self.bigram_A[w2]:
-                self.bigram_probs[(w2, w3)] = (1.0 * self.bigram_A[w2][w3] + self.a) / (1.0 * self.bigram_B[w2] + self.a * self.V)
-        # get trigram probs
-        for (w1, w2) in self.trigram_A:
-            for w3 in self.trigram_A[(w1, w2)]:
-                self.trigram_probs[(w1, w2, w3)] = (1.0 * self.trigram_A[(w1,w2)][w3] + self.a) / (1.0 * self.trigram_B[(w1,w2)] + self.a * self.V)
-        """
+        
         if DEBUG:
             for w2 in self.bigram_A:
                 for w3 in self.bigram_A[w2]:
@@ -312,7 +314,7 @@ class Ngram(nn.Module):
                     def getword(i):
                         return TEXT.vocab.itos[i]
                     print("trigramA [%s, %s, %s]: %d" % (getword(w1), getword(w2), getword(w3), self.trigram_A[(w1,w2)][w3]))
-            embed()
+            #embed()
         # do we want to ignore <eos> in unigram model?
 
     def calc_prob(self, words, debug=False):
@@ -320,8 +322,18 @@ class Ngram(nn.Module):
 
         word_prob = []
         word_prob.append(self.alphas[0] * (1.0 * self.unigram_A.get(w3, 0) + self.a) / (self.unigram_B + self.a * self.V))
-        word_prob.append(self.alphas[1] * (1.0 * self.bigram_A.get(w2, {}).get(w3, 0) + self.a) / (1.0 * self.bigram_B.get(w2, 0) + self.a * self.V))
-        word_prob.append(self.alphas[2] * (1.0 * self.trigram_probs.get((w1, w2), {}).get(w3, 0) + self.a) / (1.0 * self.trigram_B.get((w1,w2), 0) + self.a * self.V))
+        
+        if self.bigram_B.get(w2, 0) > 0:
+            word_prob.append(self.alphas[1] * self.bigram_A.get(w2, {}).get(w3, 0) / self.bigram_B.get(w2, 0))
+        else:
+            word_prob.append(0.0)
+        if self.trigram_B.get((w1, w2), 0) > 0:
+            word_prob.append(self.alphas[2] * self.trigram_A.get((w1,w2), {}).get(w3, 0) / self.trigram_B.get((w1,w2),0))
+        else:
+            word_prob.append(0.0)
+        
+        #word_prob.append(self.alphas[1] * (1.0 * self.bigram_A.get(w2, {}).get(w3, 0) + self.a) / (1.0 * self.bigram_B.get(w2, 0) + self.a * self.V))
+        #word_prob.append(self.alphas[2] * (1.0 * self.trigram_probs.get((w1, w2), {}).get(w3, 0) + self.a) / (1.0 * self.trigram_B.get((w1,w2), 0) + self.a * self.V))
         return np.sum(word_prob)
         
         if debug:
@@ -389,6 +401,138 @@ def ngram_model(args):
     model.generate_predictions()
     print("See Generated output in output.txt\n")
 
+def one_hot(idx, size, devid=-1):
+    vec = np.zeros((1, size), dtype=np.float32)
+    vec[0][idx] = 1
+    vec_var = V(torch.from_numpy(vec))
+    if devid >= 0:
+        vec_var = vec_var.cuda()
+    return vec_var
+
+def evaluate_cache(model, data_iter, batch_size=1, window=args.window):
+    model.eval()
+
+    total_loss = 0
+    total_len = 0
+    vsize = len(TEXT.vocab)
+    hid = None  # TODO: init hidden?
+
+    next_word_history = None
+    pointer_history = None
+    
+    for batch in tqdm(data_iter, desc="evaluate cache"):
+        data = batch.text
+        target = batch.target
+        total_len += data.size(0)
+        # Given batch size = 1, data/target's shape: (bptt, 1)
+        output, rnn_outs, hidden = model.forward_all(data, hid)
+        # output: (bptt, batch_size=1, vsize)
+        # rnn_outs: (bptt, batch_size=1, hidden_dim)
+        output_flat = output.squeeze(1)
+        rnn_out = rnn_outs.squeeze(1)
+
+        # Fill pointer history
+        start_idx = len(next_word_history) if next_word_history is not None else 0
+        if next_word_history is None:
+            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])
+        else:
+            next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
+        if pointer_history is None:
+            pointer_history = V(rnn_out.data)
+        else:
+            pointer_history = torch.cat([pointer_history, V(rnn_out.data)], dim=0)
+
+        # Pointer manual cross entropy
+        loss = 0
+        softmax_output_flat = torch.nn.functional.softmax(output_flat, dim=1)
+        # softmax_output_flat: (bptt, vsize)
+        for idx, vocab_loss in enumerate(softmax_output_flat):
+            p = vocab_loss
+            if start_idx + idx > window:
+                valid_next_word = next_word_history[start_idx + idx - window:start_idx + idx]
+                valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
+                logits = torch.mv(valid_pointer_history, rnn_out[idx])
+                theta = args.theta
+                ptr_attn = torch.nn.functional.softmax(theta * logits, dim=0).view(-1, 1)
+                ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
+                lambdah = args.lambdasm
+                p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
+            target_loss = p[target[idx].data]
+            loss += (-torch.log(target_loss)).data[0]
+        total_loss += loss / batch_size
+
+        next_word_history = next_word_history[-window:]
+        pointer_history = pointer_history[-window:]
+    return total_loss / total_len
+
+def generate_cache(model, batch_size=1, window=10, input_file="data/input.txt", output_file="cache.out"):
+    # let's assume we can still apply caching on input.txt (consecutive)
+    data = torchtext.datasets.LanguageModelingDataset(
+        path=input_file,
+        text_field=TEXT)
+    data_iter = torchtext.data.BPTTIterator(data, batch_size, 12, device=args.devid, train=False)
+    
+    next_word_history = None
+    pointer_history = None
+    vsize = len(TEXT.vocab)
+    hid = None  # TODO: init hidden?
+    outputs = []
+    for batch in tqdm(data_iter, desc="generate cache"):
+        #embed()
+        data = batch.text[:10]
+        target = data[1:]
+
+        output, rnn_outs, hidden = model.forward_all(data, hid)
+        # output: (bptt, batch_size=1, vsize)
+        # rnn_outs: (bptt, batch_size=1, hidden_dim)
+        output_flat = output.squeeze(1)
+        rnn_out = rnn_outs.squeeze(1)
+
+        #embed()
+        # Fill pointer history
+        start_idx = len(next_word_history) if next_word_history is not None else 0
+        if next_word_history is None:
+            next_word_history = torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])
+        else:
+            next_word_history = torch.cat([next_word_history, torch.cat([one_hot(t.data[0], vsize, args.devid) for t in target])])
+        if pointer_history is None:
+            pointer_history = V(rnn_out.data[:-1])
+        else:
+            pointer_history = torch.cat([pointer_history, V(rnn_out.data[:-1])], dim=0)
+
+        # Pointer manual cross entropy
+        loss = 0
+        softmax_output_flat = torch.nn.functional.softmax(output_flat, dim=1)
+
+        idx = softmax_output_flat.size(0) - 1
+        vocab_loss = softmax_output_flat[idx]
+        p = vocab_loss
+        if start_idx + idx > window:
+            valid_next_word = next_word_history[start_idx + idx - window:start_idx + idx]
+            valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
+            logits = torch.mv(valid_pointer_history, rnn_out[idx])
+            theta = args.theta
+            ptr_attn = torch.nn.functional.softmax(theta * logits, dim=0).view(-1, 1)
+            ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
+            lambdah = args.lambdasm
+            p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
+
+        # TODO(demi): do generation here!
+        #embed()
+        scores, idxs = torch.topk(p, 21)
+        outputs.append([filter_eos([TEXT.vocab.itos[x] for x in idxs.data.tolist()])])
+
+        next_word_history = next_word_history[-window:]
+        pointer_history = pointer_history[-window:]
+
+    with open(output_file, "w") as f:
+        f.write("id,word\n")
+        ok = 1
+        for sentences in outputs:
+            f.write("\n".join(["{},{}".format(ok+i, " ".join(x)) for i, x in enumerate(sentences)]))
+            f.write("\n")
+            ok += len(sentences)
+
 if __name__ == "__main__":
     if args.model == "Ngram":
         ngram_model(args)
@@ -408,6 +552,21 @@ if __name__ == "__main__":
         print("Test: {}".format(math.exp(test_loss / test_words)))
 
         model.generate_predictions()
+
+    elif args.model == "Cache":
+        model = torch.load("LstmLm.pth")
+        if args.devid >= 0:
+            model.cuda(args.devid)
+
+        generate_cache(model)
+
+        avg_valid_loss = evaluate_cache(model, valid_iter, 1)
+        avg_test_loss = evaluate_cache(model, test_iter, 1)
+        print("avg_valid_loss", avg_valid_loss)
+        print("avg_valid_perp", math.exp(avg_valid_loss))
+        print("avg_test_loss", avg_test_loss)
+        print("avg_test_perp", math.exp(avg_test_loss))
+    
     else:
         models = {model.__name__: model for model in [NnLm, LstmLm]}
         model = models[args.model](
