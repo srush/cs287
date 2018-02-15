@@ -76,8 +76,10 @@ if args.devid >= 0:
 
 TEXT = torchtext.data.Field()
 train, valid, test = torchtext.datasets.LanguageModelingDataset.splits(
-    path="data/",
-    train="train.txt", validation="valid.txt", test="test.txt", text_field=TEXT)
+    path=".",
+    train="train.txt", validation="valid.txt", test="valid.txt", text_field=TEXT)
+    #path="data/",
+    #train="train.txt", validation="valid.txt", test="test.txt", text_field=TEXT)
 
 TEXT.build_vocab(train)
 padidx = TEXT.vocab.stoi["<pad>"]
