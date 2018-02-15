@@ -134,7 +134,7 @@ class Lm(nn.Module):
     def generate_predictions(self):
         self.eval()
         data = torchtext.datasets.LanguageModelingDataset(
-            path="data/input.txt",
+            path="input.txt",
             text_field=TEXT)
         data_iter = torchtext.data.BPTTIterator(data, 211, 12, device=args.devid, train=False)
         outputs = [[] for _ in range(211)]
